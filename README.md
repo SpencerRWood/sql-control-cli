@@ -38,3 +38,29 @@ allowed_apps = ["Defined Benefits"]
 ```
 
 Use `--force-pass` to keep failures visible while allowing an approved prepare to continue.
+
+## Database And Repository Sources
+
+Configure database connections and named query sources in `sqlctl.toml`:
+
+```toml
+[database.connections.warehouse]
+driver = "sqlite"
+path = "warehouse.sqlite3"
+
+[repository.sources.participant_lookup]
+connection = "warehouse"
+sql = "select * from participants where participant_id = :participant_id"
+```
+
+Inspect connection metadata:
+
+```bash
+sqlctl db inspect warehouse --json
+```
+
+Execute a parameterized repository source:
+
+```bash
+sqlctl db query --source participant_lookup --param participant_id=123 --json
+```
