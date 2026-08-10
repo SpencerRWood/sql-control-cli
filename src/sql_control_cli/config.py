@@ -15,11 +15,25 @@ class ValidationProfile:
 
 
 @dataclass(frozen=True)
+class DatabaseConnectionConfig:
+    driver: str
+    path: Path | None = None
+
+
+@dataclass(frozen=True)
+class QuerySourceConfig:
+    connection: str
+    sql: str
+
+
+@dataclass(frozen=True)
 class SqlctlConfig:
     storage_path: Path
     managed_root: Path
     normalize_whitespace: bool = True
     validation_profiles: dict[str, ValidationProfile] | None = None
+    database_connections: dict[str, DatabaseConnectionConfig] | None = None
+    query_sources: dict[str, QuerySourceConfig] | None = None
 
 
 def default_user_config_path() -> Path:
@@ -61,6 +75,8 @@ def load_config(
         "managed_root": state_root / "managed",
         "normalize_whitespace": True,
         "validation_profiles": {},
+        "database_connections": {},
+        "query_sources": {},
     }
 
     paths = [default_user_config_path(), default_project_config_path()]
@@ -94,6 +110,14 @@ def load_config(
             name: _validation_profile(raw_profile)
             for name, raw_profile in dict(values["validation_profiles"]).items()
         },
+        database_connections={
+            name: _database_connection(raw_connection)
+            for name, raw_connection in dict(values["database_connections"]).items()
+        },
+        query_sources={
+            name: _query_source(raw_source)
+            for name, raw_source in dict(values["query_sources"]).items()
+        },
     )
 
 
@@ -114,6 +138,10 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
     validation = (
         data.get("validation") if isinstance(data.get("validation"), dict) else {}
     )
+    database = data.get("database") if isinstance(data.get("database"), dict) else {}
+    repository = (
+        data.get("repository") if isinstance(data.get("repository"), dict) else {}
+    )
     return {
         "storage_path": data.get("storage_path") or storage.get("path"),
         "managed_root": data.get("managed_root") or managed.get("root"),
@@ -122,6 +150,12 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
         else comparison.get("normalize_whitespace"),
         "validation_profiles": validation.get("profiles")
         if isinstance(validation.get("profiles"), dict)
+        else None,
+        "database_connections": database.get("connections")
+        if isinstance(database.get("connections"), dict)
+        else None,
+        "query_sources": repository.get("sources")
+        if isinstance(repository.get("sources"), dict)
         else None,
     }
 
@@ -158,3 +192,22 @@ def _list_value(value: Any, default: list[str]) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value]
+
+
+def _database_connection(raw_connection: Any) -> DatabaseConnectionConfig:
+    connection = raw_connection if isinstance(raw_connection, dict) else {}
+    driver = str(connection.get("driver") or "sqlite")
+    path_value = connection.get("path")
+    return DatabaseConnectionConfig(
+        driver=driver,
+        path=Path(str(path_value)).expanduser() if path_value else None,
+    )
+
+
+def _query_source(raw_source: Any) -> QuerySourceConfig:
+    source = raw_source if isinstance(raw_source, dict) else {}
+    connection = source.get("connection")
+    sql = source.get("sql")
+    if not connection or not sql:
+        return QuerySourceConfig(connection="", sql="")
+    return QuerySourceConfig(connection=str(connection), sql=str(sql))

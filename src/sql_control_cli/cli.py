@@ -7,6 +7,12 @@ import sys
 from pathlib import Path
 
 from .config import load_config
+from .database import (
+    execute_query,
+    execute_query_source,
+    inspect_connection,
+    parse_parameters,
+)
 from .managed import (
     capture,
     diff_source_to_managed,
@@ -105,6 +111,28 @@ def main(argv: list[str] | None = None) -> int:
         "diff", help="Diff a source SQL file against its managed copy."
     )
     diff_parser.add_argument("sql_file", type=Path)
+
+    db_parser = subparsers.add_parser("db", help="Database connection helpers.")
+    db_subparsers = db_parser.add_subparsers(dest="db_command")
+
+    db_inspect_parser = db_subparsers.add_parser(
+        "inspect", help="Show configured database connection metadata."
+    )
+    db_inspect_parser.add_argument("connection")
+
+    db_query_parser = db_subparsers.add_parser(
+        "query", help="Execute a parameterized SQL query."
+    )
+    query_target = db_query_parser.add_mutually_exclusive_group(required=True)
+    query_target.add_argument("--sql", help="SQL text to execute.")
+    query_target.add_argument("--source", help="Configured repository source name.")
+    db_query_parser.add_argument("--connection", help="Connection name for --sql.")
+    db_query_parser.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        help="Bind a named parameter as NAME=VALUE.",
+    )
 
     args = parser.parse_args(argv)
     if args.version:
@@ -235,6 +263,28 @@ def _run(args: argparse.Namespace, config) -> int:
             print(diff, end="")
             return 1 if diff else 0
         output = {"diff": diff}
+    elif args.command == "db":
+        if args.db_command == "inspect":
+            output = inspect_connection(config, args.connection).to_dict()
+        elif args.db_command == "query":
+            parameters = parse_parameters(args.param)
+            if args.source:
+                output = execute_query_source(
+                    config,
+                    args.source,
+                    parameters=parameters,
+                ).to_dict()
+            else:
+                if not args.connection:
+                    raise ValueError("--connection is required with --sql")
+                output = execute_query(
+                    config,
+                    connection_name=args.connection,
+                    sql=args.sql,
+                    parameters=parameters,
+                ).to_dict()
+        else:
+            raise ValueError("Unsupported db command")
     else:
         raise ValueError(f"Unsupported command: {args.command}")
     _emit(output, json_output=args.json)
