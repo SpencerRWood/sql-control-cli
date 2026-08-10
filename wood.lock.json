@@ -1,0 +1,47 @@
+{
+  "agent_packs": [],
+  "declared_inputs": {
+    "package-module": "sql_control_cli",
+    "package-name": "sql-control-cli",
+    "project-name": "sql-control-cli"
+  },
+  "files": [
+    {
+      "digest": "sha256:0c0359744cd4fa482fc8414614b510323a2317701d7d09ad096092d9e62f3f31",
+      "path": ".pre-commit-config.yaml"
+    },
+    {
+      "digest": "sha256:a65b17254b205240649da2a6571aaf64e8f419550278b81f55122555c885b69e",
+      "path": "README.md"
+    },
+    {
+      "digest": "sha256:f8b7cb514cd12f26dd7c6b7cd18606feb3e5cc3e164261bd63b59066f05c8e9b",
+      "path": "pyproject.toml"
+    },
+    {
+      "digest": "sha256:77e067dbb139974460dc2de97226b4e665a3b98f84ad089bc1dde053459627aa",
+      "path": "src/sql_control_cli/__init__.py"
+    },
+    {
+      "digest": "sha256:7ce97021d5d7afd92726ccccef44081596cec70e35669545a6f09d199d55b310",
+      "path": "src/sql_control_cli/__main__.py"
+    },
+    {
+      "digest": "sha256:ae1bc867f3fa56d0dd7cadae84783775d25e81d9e4a49bcf3921e0c7d6db9ceb",
+      "path": "src/sql_control_cli/cli.py"
+    },
+    {
+      "digest": "sha256:acb17a4c020196f278000cef9fa0099d27c87621ff961c3217d8ba22f1492b96",
+      "path": "tests/test_cli.py"
+    }
+  ],
+  "reference_packs": [],
+  "schema_version": 1,
+  "template": {
+    "digest": "sha256:3bcbf27585e16e5ced97d8dd1faf712e70aecdd76e39f5e89a82bae27c5e3bd3",
+    "name": "python-cli",
+    "source": "built-in",
+    "version": "1.0.0"
+  },
+  "wood_tools_version": "0.2.0"
+}

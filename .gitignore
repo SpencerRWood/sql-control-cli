@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Local Codex workflow state
+.codex/*
+!.codex/.gitkeep
+
+# OS and editor noise
+.DS_Store
+.vscode/
+.idea/
+
+# sqlctl local state
+*.sqlite3
+*.sqlite3-*
+managed/
