@@ -21,6 +21,9 @@ venv/
 .codex/*
 !.codex/.gitkeep
 
+# Local helper scripts
+scripts/
+
 # OS and editor noise
 .DS_Store
 .vscode/

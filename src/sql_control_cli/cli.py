@@ -21,40 +21,89 @@ from .metadata import (
     source_hash,
 )
 from .storage import Repository
+from .validation import validate_sql_file
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sqlctl")
-    parser.add_argument("--version", action="store_true", help="Print the sqlctl version.")
-    parser.add_argument("--config", action="append", type=Path, default=[], help="Load an extra TOML config file.")
-    parser.add_argument("--storage-path", type=Path, help="Override the SQLite storage path.")
-    parser.add_argument("--managed-root", type=Path, help="Override the managed SQL root.")
+    parser.add_argument(
+        "--version", action="store_true", help="Print the sqlctl version."
+    )
+    parser.add_argument(
+        "--config",
+        action="append",
+        type=Path,
+        default=[],
+        help="Load an extra TOML config file.",
+    )
+    parser.add_argument(
+        "--storage-path", type=Path, help="Override the SQLite storage path."
+    )
+    parser.add_argument(
+        "--managed-root", type=Path, help="Override the managed SQL root."
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON output.")
     subparsers = parser.add_subparsers(dest="command")
 
     metadata_parser = subparsers.add_parser("metadata", help="Parse SQL metadata.")
     metadata_parser.add_argument("sql_file", type=Path)
 
-    hash_parser = subparsers.add_parser("hash", help="Calculate the normalized source hash.")
+    hash_parser = subparsers.add_parser(
+        "hash", help="Calculate the normalized source hash."
+    )
     hash_parser.add_argument("sql_file", type=Path)
 
-    capture_parser = subparsers.add_parser("capture", help="Create or update a managed SQL copy.")
+    capture_parser = subparsers.add_parser(
+        "capture", help="Create or update a managed SQL copy."
+    )
     capture_parser.add_argument("sql_file", type=Path)
+
+    validate_parser = subparsers.add_parser(
+        "validate", help="Validate SQL metadata and workflow readiness."
+    )
+    validate_parser.add_argument("sql_file", type=Path)
+    validate_parser.add_argument(
+        "--profile", default="default", help="Validation profile name."
+    )
+    validate_parser.add_argument(
+        "--force-pass",
+        action="store_true",
+        help="Return success while reporting failures.",
+    )
+
+    prepare_parser = subparsers.add_parser(
+        "prepare", help="Validate and capture a managed SQL copy."
+    )
+    prepare_parser.add_argument("sql_file", type=Path)
+    prepare_parser.add_argument(
+        "--profile", default="default", help="Validation profile name."
+    )
+    prepare_parser.add_argument(
+        "--force-pass", action="store_true", help="Capture even when validation fails."
+    )
 
     find_parser = subparsers.add_parser("find", help="Find managed queries.")
     find_parser.add_argument("term", nargs="?", default="")
 
-    status_parser = subparsers.add_parser("status", help="Show managed-copy status for a SQL file.")
+    status_parser = subparsers.add_parser(
+        "status", help="Show managed-copy status for a SQL file."
+    )
     status_parser.add_argument("sql_file", type=Path)
 
-    history_parser = subparsers.add_parser("history", help="Show revision history for a SQL file or identity key.")
+    history_parser = subparsers.add_parser(
+        "history", help="Show revision history for a SQL file or identity key."
+    )
     history_parser.add_argument("identity")
 
-    pull_parser = subparsers.add_parser("pull", help="Copy a managed SQL file to a destination.")
+    pull_parser = subparsers.add_parser(
+        "pull", help="Copy a managed SQL file to a destination."
+    )
     pull_parser.add_argument("identity")
     pull_parser.add_argument("destination", type=Path)
 
-    diff_parser = subparsers.add_parser("diff", help="Diff a source SQL file against its managed copy.")
+    diff_parser = subparsers.add_parser(
+        "diff", help="Diff a source SQL file against its managed copy."
+    )
     diff_parser.add_argument("sql_file", type=Path)
 
     args = parser.parse_args(argv)
@@ -73,7 +122,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _run(args, config)
     except (MetadataError, OSError, ValueError) as err:
-        _emit({"ok": False, "error": str(err)}, json_output=args.json, stream=sys.stderr)
+        _emit(
+            {"ok": False, "error": str(err)}, json_output=args.json, stream=sys.stderr
+        )
         return 2
 
 
@@ -97,9 +148,51 @@ def _run(args: argparse.Namespace, config) -> int:
             "managed_path": str(result.managed_path),
             "version": result.revision.version,
         }
+    elif args.command == "validate":
+        result = validate_sql_file(
+            args.sql_file,
+            config,
+            profile_name=args.profile,
+            force_pass=args.force_pass,
+        )
+        _emit(
+            result.to_dict(),
+            json_output=args.json,
+            stream=sys.stderr if not result.passed else None,
+        )
+        return 0 if result.passed else 2
+    elif args.command == "prepare":
+        validation = validate_sql_file(
+            args.sql_file,
+            config,
+            profile_name=args.profile,
+            force_pass=args.force_pass,
+        )
+        if not validation.passed:
+            _emit(
+                {"validation": validation.to_dict()},
+                json_output=args.json,
+                stream=sys.stderr,
+            )
+            return 2
+        result = capture(args.sql_file, config)
+        output = {
+            "validation": validation.to_dict(),
+            "capture": {
+                "action": result.action,
+                "identity_key": identity_key(result.metadata),
+                "source_hash": result.source_hash,
+                "managed_path": str(result.managed_path),
+                "version": result.revision.version,
+            },
+        }
     elif args.command == "find":
         with repository.connect() as connection:
-            rows = repository.find_queries(connection, args.term) if args.term else repository.all_queries(connection)
+            rows = (
+                repository.find_queries(connection, args.term)
+                if args.term
+                else repository.all_queries(connection)
+            )
         output = {"queries": [_query_row(row) for row in rows]}
     elif args.command == "status":
         sql_text = args.sql_file.read_text(encoding="utf-8")
@@ -119,7 +212,10 @@ def _run(args: argparse.Namespace, config) -> int:
         key = identity_from_text_or_key(args.identity)
         with repository.connect() as connection:
             revisions = repository.history(connection, key)
-        output = {"identity_key": key, "revisions": [revision.__dict__ for revision in revisions]}
+        output = {
+            "identity_key": key,
+            "revisions": [revision.__dict__ for revision in revisions],
+        }
     elif args.command == "pull":
         key = identity_from_text_or_key(args.identity)
         with repository.connect() as connection:

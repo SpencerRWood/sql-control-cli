@@ -13,3 +13,28 @@ uv sync --group dev
 uv run pytest
 uv run ruff check .
 ```
+
+## Validation And Prepare
+
+Validate a SQL file before capture:
+
+```bash
+sqlctl validate path/to/query.sql --profile strict --json
+```
+
+Create a managed copy only after validation passes:
+
+```bash
+sqlctl prepare path/to/query.sql --profile strict --json
+```
+
+Validation profiles live in `sqlctl.toml`:
+
+```toml
+[validation.profiles.strict]
+enabled_rules = ["required_metadata", "allowed_team", "allowed_app", "comparison_keys_required"]
+allowed_teams = ["Benefits"]
+allowed_apps = ["Defined Benefits"]
+```
+
+Use `--force-pass` to keep failures visible while allowing an approved prepare to continue.

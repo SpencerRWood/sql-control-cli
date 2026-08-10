@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 
 REQUIRED_FIELDS = ("Query_Name", "Connection_Name", "App_Name")
-OPTIONAL_FIELDS = ("Version", "Date Changed", "Comparison Keys")
+OPTIONAL_FIELDS = ("Team", "Version", "Date Changed", "Comparison Keys")
 
 
 class MetadataError(ValueError):
@@ -18,6 +18,7 @@ class QueryMetadata:
     query_name: str
     connection_name: str
     app_name: str
+    team_name: str | None = None
     version: int | None = None
     date_changed: str | None = None
     comparison_keys: tuple[str, ...] = ()
@@ -35,6 +36,7 @@ class QueryMetadata:
             "Query_Name": self.query_name,
             "Connection_Name": self.connection_name,
             "App_Name": self.app_name,
+            "Team": self.team_name,
             "Version": self.version,
             "Date Changed": self.date_changed,
             "Comparison Keys": list(self.comparison_keys),
@@ -95,6 +97,7 @@ def parse_metadata(sql_text: str) -> QueryMetadata:
         query_name=fields["Query_Name"],
         connection_name=fields["Connection_Name"],
         app_name=fields["App_Name"],
+        team_name=fields.get("Team") or None,
         version=version,
         date_changed=fields.get("Date Changed") or None,
         comparison_keys=comparison_keys,
@@ -123,13 +126,18 @@ def source_hash(sql_text: str, *, normalize_whitespace: bool = True) -> str:
         body = re.sub(r"\s+", " ", body).strip()
     payload = {
         "identity": metadata.identity,
+        "team": metadata.team_name,
         "comparison_keys": metadata.comparison_keys,
         "body": body,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
-def render_metadata_block(metadata: QueryMetadata, *, version: int, date_changed: str) -> str:
+def render_metadata_block(
+    metadata: QueryMetadata, *, version: int, date_changed: str
+) -> str:
     lines = [
         "/*",
         f"Query_Name: {metadata.query_name}",
@@ -138,6 +146,8 @@ def render_metadata_block(metadata: QueryMetadata, *, version: int, date_changed
         f"Version: {version}",
         f"Date Changed: {date_changed}",
     ]
+    if metadata.team_name:
+        lines.insert(4, f"Team: {metadata.team_name}")
     if metadata.comparison_keys:
         lines.append(f"Comparison Keys: {', '.join(metadata.comparison_keys)}")
     lines.append("*/")
@@ -155,6 +165,7 @@ def _canonical_key(key: str) -> str:
         "query name": "Query_Name",
         "connection name": "Connection_Name",
         "app name": "App_Name",
+        "team": "Team",
         "version": "Version",
         "date changed": "Date Changed",
         "comparison keys": "Comparison Keys",
