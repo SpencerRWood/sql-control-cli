@@ -1,0 +1,22 @@
+[project]
+name = "sql-control-cli"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+sqlctl = "sql_control_cli.cli:main"
+sql-control-cli = "sql_control_cli.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0.0", "ruff>=0.11.0"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
