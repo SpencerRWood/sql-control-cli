@@ -487,6 +487,29 @@ path = "{production_database}"
     return config
 
 
+def write_publishing_config(
+    path: Path,
+    *,
+    test_database: Path,
+    connection_name: str = "test",
+) -> Path:
+    config = path / "sqlctl.toml"
+    config.write_text(
+        f"""
+[database.connections.{connection_name}]
+driver = "sqlite"
+path = "{test_database}"
+
+[publishing.test]
+connection = "{connection_name}"
+table = "published_queries"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return config
+
+
 def compare_base_args(tmp_path: Path, config_path: Path) -> list[str]:
     return [
         "--config",
@@ -784,4 +807,149 @@ def test_compare_app_reports_missing_application(tmp_path: Path, capsys) -> None
     assert output["ok"] is False
     assert (
         output["error"] == "Managed queries not found for application: Defined Benefits"
+    )
+
+
+def test_deploy_test_creates_and_no_changes_published_query(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(sql_fixture(), encoding="utf-8")
+    test_db = tmp_path / "test.sqlite3"
+    config_path = write_publishing_config(tmp_path, test_database=test_db)
+    base_args = [
+        "--config",
+        str(config_path),
+        "--storage-path",
+        str(tmp_path / "state.sqlite3"),
+        "--managed-root",
+        str(tmp_path / "managed"),
+        "--json",
+        "deploy-test",
+        str(source),
+    ]
+
+    assert main(base_args) == 0
+    create_output = json.loads(capsys.readouterr().out)
+    assert create_output["action"] == "CREATE"
+    assert create_output["test_connection"] == "test"
+    assert create_output["table"] == "published_queries"
+
+    with sqlite3.connect(test_db) as connection:
+        row = connection.execute(
+            "SELECT query_name, version FROM published_queries WHERE identity_key = ?",
+            (create_output["identity_key"],),
+        ).fetchone()
+    assert row == ("Participant Lookup", 1)
+
+    assert main(base_args) == 0
+    no_change_output = json.loads(capsys.readouterr().out)
+    assert no_change_output["action"] == "NO_CHANGE"
+    assert no_change_output["version"] == 1
+
+
+def test_deploy_test_updates_changed_query(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(sql_fixture(), encoding="utf-8")
+    test_db = tmp_path / "test.sqlite3"
+    config_path = write_publishing_config(tmp_path, test_database=test_db)
+    base_args = [
+        "--config",
+        str(config_path),
+        "--storage-path",
+        str(tmp_path / "state.sqlite3"),
+        "--managed-root",
+        str(tmp_path / "managed"),
+        "--json",
+        "deploy-test",
+        str(source),
+    ]
+
+    assert main(base_args) == 0
+    capsys.readouterr()
+    source.write_text(
+        sql_fixture().replace("select *", "select participant_id, name"),
+        encoding="utf-8",
+    )
+
+    assert main(base_args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["action"] == "UPDATE"
+    assert output["version"] == 2
+
+    with sqlite3.connect(test_db) as connection:
+        row = connection.execute(
+            "SELECT version, sql_text FROM published_queries WHERE identity_key = ?",
+            (output["identity_key"],),
+        ).fetchone()
+    assert row[0] == 2
+    assert "select participant_id, name" in row[1]
+
+
+def test_deploy_test_refuses_validation_failure(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        sql_fixture().replace("Comparison Keys: participant_id\n", ""), encoding="utf-8"
+    )
+    test_db = tmp_path / "test.sqlite3"
+    config_path = write_publishing_config(tmp_path, test_database=test_db)
+    validation_config = tmp_path / "validation.toml"
+    validation_config.write_text(
+        """
+[validation.profiles.strict]
+enabled_rules = ["required_metadata", "comparison_keys_required"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--config",
+                str(validation_config),
+                "--json",
+                "deploy-test",
+                str(source),
+                "--profile",
+                "strict",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert output["validation"]["status"] == "failed"
+    assert output["validation"]["issues"][0]["rule"] == "comparison_keys_required"
+    assert not test_db.exists()
+
+
+def test_deploy_test_prohibits_production_connection(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(sql_fixture(), encoding="utf-8")
+    production_db = tmp_path / "production.sqlite3"
+    config_path = write_publishing_config(
+        tmp_path, test_database=production_db, connection_name="production"
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--json",
+                "deploy-test",
+                str(source),
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert output["ok"] is False
+    assert (
+        output["error"]
+        == "deploy-test cannot publish to production connection: production"
     )
