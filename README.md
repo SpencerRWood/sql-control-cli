@@ -64,3 +64,31 @@ Execute a parameterized repository source:
 ```bash
 sqlctl db query --source participant_lookup --param participant_id=123 --json
 ```
+
+## Production Comparison
+
+Capture a production baseline, then compare candidate query output against that managed copy:
+
+```toml
+[database.connections.candidate]
+driver = "sqlite"
+path = "candidate.sqlite3"
+
+[database.connections.production]
+driver = "sqlite"
+path = "production.sqlite3"
+```
+
+```bash
+sqlctl capture path/to/query.sql --json
+sqlctl compare path/to/query.sql \
+  --candidate-connection candidate \
+  --production-connection production \
+  --param active=1 \
+  --json
+```
+
+`compare` validates the SQL file, resolves the managed production baseline by normalized query
+identity, and compares result rows without depending on database row order. Queries without a
+managed baseline return `status: first_time`; existing baselines return `matched` or `different`
+with deterministic row differences.
