@@ -6,6 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .comparison import compare_to_production
 from .config import load_config
 from .database import (
     execute_query,
@@ -128,6 +129,22 @@ def main(argv: list[str] | None = None) -> int:
     query_target.add_argument("--source", help="Configured repository source name.")
     db_query_parser.add_argument("--connection", help="Connection name for --sql.")
     db_query_parser.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        help="Bind a named parameter as NAME=VALUE.",
+    )
+
+    compare_parser = subparsers.add_parser(
+        "compare", help="Compare a SQL file to its managed production baseline."
+    )
+    compare_parser.add_argument("sql_file", type=Path)
+    compare_parser.add_argument("--candidate-connection", required=True)
+    compare_parser.add_argument("--production-connection", required=True)
+    compare_parser.add_argument(
+        "--profile", default="default", help="Validation profile name."
+    )
+    compare_parser.add_argument(
         "--param",
         action="append",
         default=[],
@@ -285,6 +302,18 @@ def _run(args: argparse.Namespace, config) -> int:
                 ).to_dict()
         else:
             raise ValueError("Unsupported db command")
+    elif args.command == "compare":
+        output = compare_to_production(
+            args.sql_file,
+            config,
+            candidate_connection=args.candidate_connection,
+            production_connection=args.production_connection,
+            parameters=parse_parameters(args.param),
+            profile_name=args.profile,
+        )
+        if not output["ok"]:
+            _emit(output, json_output=args.json, stream=sys.stderr)
+            return 2
     else:
         raise ValueError(f"Unsupported command: {args.command}")
     _emit(output, json_output=args.json)
