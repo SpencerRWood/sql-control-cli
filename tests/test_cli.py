@@ -288,7 +288,10 @@ def test_prepare_force_pass_captures_with_validation_context(
     assert Path(output["capture"]["managed_path"]).exists()
 
 
-def create_participant_database(path: Path) -> None:
+def create_participant_database(
+    path: Path,
+    rows: list[tuple[int, str, int]] | None = None,
+) -> None:
     with sqlite3.connect(path) as connection:
         connection.execute(
             """
@@ -301,7 +304,7 @@ def create_participant_database(path: Path) -> None:
         )
         connection.executemany(
             "INSERT INTO participants (participant_id, name, active) VALUES (?, ?, ?)",
-            [(1, "Ada", 1), (2, "Grace", 0)],
+            rows or [(1, "Ada", 1), (2, "Grace", 0)],
         )
 
 
@@ -430,3 +433,355 @@ def test_db_query_reports_missing_source_deterministically(
     output = json.loads(capsys.readouterr().err)
     assert output["ok"] is False
     assert "Query source not found: missing" in output["error"]
+
+
+def comparison_fixture(order_by: str = "") -> str:
+    return f"""/*
+Query_Name: Participant Active Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+Team: Benefits
+Comparison Keys: participant_id
+*/
+
+select participant_id, name
+from participants
+where active = :active
+{order_by};
+"""
+
+
+def application_comparison_fixture(query_name: str, select_sql: str) -> str:
+    return f"""/*
+Query_Name: {query_name}
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+Team: Benefits
+Comparison Keys: participant_id
+*/
+
+{select_sql}
+"""
+
+
+def write_comparison_config(
+    path: Path,
+    *,
+    candidate_database: Path,
+    production_database: Path,
+) -> Path:
+    config = path / "sqlctl.toml"
+    config.write_text(
+        f"""
+[database.connections.candidate]
+driver = "sqlite"
+path = "{candidate_database}"
+
+[database.connections.production]
+driver = "sqlite"
+path = "{production_database}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return config
+
+
+def compare_base_args(tmp_path: Path, config_path: Path) -> list[str]:
+    return [
+        "--config",
+        str(config_path),
+        "--storage-path",
+        str(tmp_path / "state.sqlite3"),
+        "--managed-root",
+        str(tmp_path / "managed"),
+        "--json",
+    ]
+
+
+def test_compare_reports_first_time_without_baseline(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(comparison_fixture(), encoding="utf-8")
+    candidate_db = tmp_path / "candidate.sqlite3"
+    production_db = tmp_path / "production.sqlite3"
+    create_participant_database(candidate_db)
+    create_participant_database(production_db)
+    config_path = write_comparison_config(
+        tmp_path,
+        candidate_database=candidate_db,
+        production_database=production_db,
+    )
+
+    assert (
+        main(
+            [
+                *compare_base_args(tmp_path, config_path),
+                "compare",
+                str(source),
+                "--candidate-connection",
+                "candidate",
+                "--production-connection",
+                "production",
+                "--param",
+                "active=1",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "first_time"
+    assert (
+        output["identity_key"]
+        == "participant-active-lookup::main-warehouse::defined-benefits"
+    )
+    assert output["baseline"] is None
+
+
+def test_compare_matches_independent_of_row_order(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        comparison_fixture("order by participant_id asc"), encoding="utf-8"
+    )
+    candidate_db = tmp_path / "candidate.sqlite3"
+    production_db = tmp_path / "production.sqlite3"
+    rows = [(1, "Ada", 1), (3, "Alan", 1), (2, "Grace", 0)]
+    create_participant_database(candidate_db, rows=list(reversed(rows)))
+    create_participant_database(production_db, rows=rows)
+    config_path = write_comparison_config(
+        tmp_path,
+        candidate_database=candidate_db,
+        production_database=production_db,
+    )
+    base_args = compare_base_args(tmp_path, config_path)
+
+    assert main([*base_args, "capture", str(source)]) == 0
+    capsys.readouterr()
+    source.write_text(
+        comparison_fixture("order by participant_id desc"), encoding="utf-8"
+    )
+
+    assert (
+        main(
+            [
+                *base_args,
+                "compare",
+                str(source),
+                "--candidate-connection",
+                "candidate",
+                "--production-connection",
+                "production",
+                "--param",
+                "active=1",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "matched"
+    assert output["baseline"]["version"] == 1
+    assert output["comparison"] == {
+        "status": "matched",
+        "candidate_row_count": 2,
+        "production_row_count": 2,
+        "missing_from_candidate": [],
+        "unexpected_in_candidate": [],
+    }
+
+
+def test_compare_reports_different_rows_deterministically(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(comparison_fixture(), encoding="utf-8")
+    candidate_db = tmp_path / "candidate.sqlite3"
+    production_db = tmp_path / "production.sqlite3"
+    create_participant_database(candidate_db, rows=[(1, "Ada Changed", 1)])
+    create_participant_database(production_db, rows=[(1, "Ada", 1)])
+    config_path = write_comparison_config(
+        tmp_path,
+        candidate_database=candidate_db,
+        production_database=production_db,
+    )
+    base_args = compare_base_args(tmp_path, config_path)
+
+    assert main([*base_args, "capture", str(source)]) == 0
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                *base_args,
+                "compare",
+                str(source),
+                "--candidate-connection",
+                "candidate",
+                "--production-connection",
+                "production",
+                "--param",
+                "active=1",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "different"
+    assert output["comparison"]["missing_from_candidate"] == [
+        {"name": "Ada", "participant_id": 1}
+    ]
+    assert output["comparison"]["unexpected_in_candidate"] == [
+        {"name": "Ada Changed", "participant_id": 1}
+    ]
+
+
+def test_compare_app_matches_all_managed_queries(tmp_path: Path, capsys) -> None:
+    lookup = tmp_path / "lookup.sql"
+    names = tmp_path / "names.sql"
+    lookup.write_text(
+        application_comparison_fixture(
+            "Participant Active Lookup",
+            """
+select participant_id, name
+from participants
+where active = :active
+order by participant_id asc;
+""".strip(),
+        ),
+        encoding="utf-8",
+    )
+    names.write_text(
+        application_comparison_fixture(
+            "Participant Active Names",
+            """
+select participant_id, name
+from participants
+where active = :active
+order by participant_id desc;
+""".strip(),
+        ),
+        encoding="utf-8",
+    )
+    candidate_db = tmp_path / "candidate.sqlite3"
+    production_db = tmp_path / "production.sqlite3"
+    rows = [(1, "Ada", 1), (3, "Alan", 1), (2, "Grace", 0)]
+    create_participant_database(candidate_db, rows=list(reversed(rows)))
+    create_participant_database(production_db, rows=rows)
+    config_path = write_comparison_config(
+        tmp_path,
+        candidate_database=candidate_db,
+        production_database=production_db,
+    )
+    base_args = compare_base_args(tmp_path, config_path)
+
+    assert main([*base_args, "capture", str(lookup)]) == 0
+    assert main([*base_args, "capture", str(names)]) == 0
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                *base_args,
+                "compare-app",
+                "Defined Benefits",
+                "--candidate-connection",
+                "candidate",
+                "--production-connection",
+                "production",
+                "--param",
+                "active=1",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "matched"
+    assert output["query_count"] == 2
+    assert output["matched_count"] == 2
+    assert output["different_count"] == 0
+    assert [query["query_name"] for query in output["queries"]] == [
+        "Participant Active Lookup",
+        "Participant Active Names",
+    ]
+    assert {query["status"] for query in output["queries"]} == {"matched"}
+
+
+def test_compare_app_reports_different_aggregate(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(comparison_fixture(), encoding="utf-8")
+    candidate_db = tmp_path / "candidate.sqlite3"
+    production_db = tmp_path / "production.sqlite3"
+    create_participant_database(candidate_db, rows=[(1, "Ada Changed", 1)])
+    create_participant_database(production_db, rows=[(1, "Ada", 1)])
+    config_path = write_comparison_config(
+        tmp_path,
+        candidate_database=candidate_db,
+        production_database=production_db,
+    )
+    base_args = compare_base_args(tmp_path, config_path)
+
+    assert main([*base_args, "capture", str(source)]) == 0
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                *base_args,
+                "compare-app",
+                "Defined Benefits",
+                "--candidate-connection",
+                "candidate",
+                "--production-connection",
+                "production",
+                "--param",
+                "active=1",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "different"
+    assert output["matched_count"] == 0
+    assert output["different_count"] == 1
+    assert output["queries"][0]["comparison"]["missing_from_candidate"] == [
+        {"name": "Ada", "participant_id": 1}
+    ]
+    assert output["queries"][0]["comparison"]["unexpected_in_candidate"] == [
+        {"name": "Ada Changed", "participant_id": 1}
+    ]
+
+
+def test_compare_app_reports_missing_application(tmp_path: Path, capsys) -> None:
+    candidate_db = tmp_path / "candidate.sqlite3"
+    production_db = tmp_path / "production.sqlite3"
+    create_participant_database(candidate_db)
+    create_participant_database(production_db)
+    config_path = write_comparison_config(
+        tmp_path,
+        candidate_database=candidate_db,
+        production_database=production_db,
+    )
+
+    assert (
+        main(
+            [
+                *compare_base_args(tmp_path, config_path),
+                "compare-app",
+                "Defined Benefits",
+                "--candidate-connection",
+                "candidate",
+                "--production-connection",
+                "production",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert output["ok"] is False
+    assert (
+        output["error"] == "Managed queries not found for application: Defined Benefits"
+    )
