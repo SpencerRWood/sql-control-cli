@@ -27,6 +27,12 @@ class QuerySourceConfig:
 
 
 @dataclass(frozen=True)
+class TestPublishingConfig:
+    connection: str = ""
+    table: str = "sqlctl_test_queries"
+
+
+@dataclass(frozen=True)
 class SqlctlConfig:
     storage_path: Path
     managed_root: Path
@@ -34,6 +40,7 @@ class SqlctlConfig:
     validation_profiles: dict[str, ValidationProfile] | None = None
     database_connections: dict[str, DatabaseConnectionConfig] | None = None
     query_sources: dict[str, QuerySourceConfig] | None = None
+    test_publishing: TestPublishingConfig = TestPublishingConfig()
 
 
 def default_user_config_path() -> Path:
@@ -77,6 +84,7 @@ def load_config(
         "validation_profiles": {},
         "database_connections": {},
         "query_sources": {},
+        "test_publishing": {},
     }
 
     paths = [default_user_config_path(), default_project_config_path()]
@@ -118,6 +126,7 @@ def load_config(
             name: _query_source(raw_source)
             for name, raw_source in dict(values["query_sources"]).items()
         },
+        test_publishing=_test_publishing(values["test_publishing"]),
     )
 
 
@@ -142,6 +151,9 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
     repository = (
         data.get("repository") if isinstance(data.get("repository"), dict) else {}
     )
+    publishing = (
+        data.get("publishing") if isinstance(data.get("publishing"), dict) else {}
+    )
     return {
         "storage_path": data.get("storage_path") or storage.get("path"),
         "managed_root": data.get("managed_root") or managed.get("root"),
@@ -156,6 +168,9 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
         else None,
         "query_sources": repository.get("sources")
         if isinstance(repository.get("sources"), dict)
+        else None,
+        "test_publishing": publishing.get("test")
+        if isinstance(publishing.get("test"), dict)
         else None,
     }
 
@@ -211,3 +226,11 @@ def _query_source(raw_source: Any) -> QuerySourceConfig:
     if not connection or not sql:
         return QuerySourceConfig(connection="", sql="")
     return QuerySourceConfig(connection=str(connection), sql=str(sql))
+
+
+def _test_publishing(raw_publishing: Any) -> TestPublishingConfig:
+    publishing = raw_publishing if isinstance(raw_publishing, dict) else {}
+    return TestPublishingConfig(
+        connection=str(publishing.get("connection") or ""),
+        table=str(publishing.get("table") or "sqlctl_test_queries"),
+    )

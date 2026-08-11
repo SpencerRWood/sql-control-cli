@@ -106,3 +106,27 @@ sqlctl compare-app "Defined Benefits" \
 `compare-app` loads managed queries by exact `App_Name`, compares each query against the same
 candidate and production connections, and returns aggregate counts plus per-query comparison
 details.
+
+## Test Publishing
+
+Configure a test publishing target:
+
+```toml
+[database.connections.test]
+driver = "sqlite"
+path = "test.sqlite3"
+
+[publishing.test]
+connection = "test"
+table = "published_queries"
+```
+
+Publish a validated managed query to test:
+
+```bash
+sqlctl deploy-test path/to/query.sql --profile strict --json
+```
+
+`deploy-test` validates and captures the query, writes the managed SQL into the configured test
+registry, and reports `CREATE`, `UPDATE`, or `NO_CHANGE`. It refuses production-named
+connections; production promotion is intentionally outside this command.

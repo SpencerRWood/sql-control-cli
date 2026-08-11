@@ -27,6 +27,7 @@ from .metadata import (
     parse_metadata,
     source_hash,
 )
+from .publishing import deploy_test
 from .storage import Repository
 from .validation import validate_sql_file
 
@@ -162,6 +163,18 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         help="Bind a named parameter as NAME=VALUE.",
+    )
+
+    deploy_test_parser = subparsers.add_parser(
+        "deploy-test", help="Publish a managed SQL query to the configured test target."
+    )
+    deploy_test_parser.add_argument("sql_file", type=Path)
+    deploy_test_parser.add_argument(
+        "--connection",
+        help="Override [publishing.test] connection for this deployment.",
+    )
+    deploy_test_parser.add_argument(
+        "--profile", default="default", help="Validation profile name."
     )
 
     args = parser.parse_args(argv)
@@ -335,6 +348,16 @@ def _run(args: argparse.Namespace, config) -> int:
             production_connection=args.production_connection,
             parameters=parse_parameters(args.param),
         )
+    elif args.command == "deploy-test":
+        output = deploy_test(
+            args.sql_file,
+            config,
+            connection_name=args.connection,
+            profile_name=args.profile,
+        )
+        if not output["ok"]:
+            _emit(output, json_output=args.json, stream=sys.stderr)
+            return 2
     else:
         raise ValueError(f"Unsupported command: {args.command}")
     _emit(output, json_output=args.json)
