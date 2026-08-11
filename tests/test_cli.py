@@ -953,3 +953,93 @@ def test_deploy_test_prohibits_production_connection(tmp_path: Path, capsys) -> 
         output["error"]
         == "deploy-test cannot publish to production connection: production"
     )
+
+
+def test_parity_reports_matched_test_registry(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(sql_fixture(), encoding="utf-8")
+    test_db = tmp_path / "test.sqlite3"
+    config_path = write_publishing_config(tmp_path, test_database=test_db)
+    base_args = [
+        "--config",
+        str(config_path),
+        "--storage-path",
+        str(tmp_path / "state.sqlite3"),
+        "--managed-root",
+        str(tmp_path / "managed"),
+        "--json",
+    ]
+
+    assert main([*base_args, "deploy-test", str(source)]) == 0
+    capsys.readouterr()
+
+    assert main([*base_args, "parity", "--app", "Defined Benefits"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "matched"
+    assert output["query_count"] == 1
+    assert output["matched_count"] == 1
+    assert output["mismatch_count"] == 0
+    assert output["queries"][0]["status"] == "matched"
+    assert output["queries"][0]["issues"] == []
+
+
+def test_parity_reports_missing_test_deployment(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(sql_fixture(), encoding="utf-8")
+    test_db = tmp_path / "test.sqlite3"
+    config_path = write_publishing_config(tmp_path, test_database=test_db)
+    base_args = [
+        "--config",
+        str(config_path),
+        "--storage-path",
+        str(tmp_path / "state.sqlite3"),
+        "--managed-root",
+        str(tmp_path / "managed"),
+        "--json",
+    ]
+
+    assert main([*base_args, "capture", str(source)]) == 0
+    capsys.readouterr()
+
+    assert main([*base_args, "parity"]) == 1
+    output = json.loads(capsys.readouterr().err)
+    assert output["ok"] is False
+    assert output["status"] == "mismatch"
+    assert output["mismatch_count"] == 1
+    assert output["queries"][0]["issues"] == ["test_missing"]
+
+
+def test_parity_reports_test_sql_drift(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(sql_fixture(), encoding="utf-8")
+    test_db = tmp_path / "test.sqlite3"
+    config_path = write_publishing_config(tmp_path, test_database=test_db)
+    base_args = [
+        "--config",
+        str(config_path),
+        "--storage-path",
+        str(tmp_path / "state.sqlite3"),
+        "--managed-root",
+        str(tmp_path / "managed"),
+        "--json",
+    ]
+
+    assert main([*base_args, "deploy-test", str(source)]) == 0
+    deploy_output = json.loads(capsys.readouterr().out)
+    with sqlite3.connect(test_db) as connection:
+        connection.execute(
+            """
+            UPDATE published_queries
+            SET sql_text = replace(sql_text, 'select *', 'select participant_id')
+            WHERE identity_key = ?
+            """,
+            (deploy_output["identity_key"],),
+        )
+
+    assert main([*base_args, "parity"]) == 1
+    output = json.loads(capsys.readouterr().err)
+    assert output["status"] == "mismatch"
+    assert output["queries"][0]["issues"] == [
+        "sql_text_mismatch",
+        "test_sql_hash_mismatch",
+    ]

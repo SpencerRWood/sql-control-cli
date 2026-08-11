@@ -27,6 +27,7 @@ from .metadata import (
     parse_metadata,
     source_hash,
 )
+from .parity import audit_parity
 from .publishing import deploy_test
 from .storage import Repository
 from .validation import validate_sql_file
@@ -175,6 +176,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     deploy_test_parser.add_argument(
         "--profile", default="default", help="Validation profile name."
+    )
+
+    parity_parser = subparsers.add_parser(
+        "parity", help="Audit managed SQL parity against the configured test target."
+    )
+    parity_parser.add_argument(
+        "--app", help="Limit the parity audit to an exact App_Name."
+    )
+    parity_parser.add_argument(
+        "--connection",
+        help="Override [publishing.test] connection for this audit.",
     )
 
     args = parser.parse_args(argv)
@@ -358,6 +370,15 @@ def _run(args: argparse.Namespace, config) -> int:
         if not output["ok"]:
             _emit(output, json_output=args.json, stream=sys.stderr)
             return 2
+    elif args.command == "parity":
+        output = audit_parity(
+            config,
+            app_name=args.app,
+            connection_name=args.connection,
+        )
+        if not output["ok"]:
+            _emit(output, json_output=args.json, stream=sys.stderr)
+            return 1
     else:
         raise ValueError(f"Unsupported command: {args.command}")
     _emit(output, json_output=args.json)

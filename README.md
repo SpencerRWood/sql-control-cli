@@ -130,3 +130,15 @@ sqlctl deploy-test path/to/query.sql --profile strict --json
 `deploy-test` validates and captures the query, writes the managed SQL into the configured test
 registry, and reports `CREATE`, `UPDATE`, or `NO_CHANGE`. It refuses production-named
 connections; production promotion is intentionally outside this command.
+
+## Release Parity
+
+Audit managed SQL against the configured test publishing registry:
+
+```bash
+sqlctl parity --app "Defined Benefits" --json
+```
+
+`parity` checks that every managed query has a matching test deployment by identity, source hash,
+and SQL text. It returns consolidated counts plus per-query issues such as `test_missing`,
+`source_hash_mismatch`, and `sql_text_mismatch`.
