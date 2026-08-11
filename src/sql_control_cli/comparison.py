@@ -70,20 +70,14 @@ def compare_to_production(
     if not baseline_path.exists():
         raise ComparisonError(f"Managed production baseline not found: {baseline_path}")
 
-    active_parameters = parameters or {}
-    candidate = execute_query(
+    candidate, production, comparison = _compare_sql_texts(
         config,
-        connection_name=candidate_connection,
-        sql=sql_body(sql_text),
-        parameters=active_parameters,
+        candidate_connection=candidate_connection,
+        production_connection=production_connection,
+        candidate_sql_text=sql_text,
+        production_sql_text=baseline_path.read_text(encoding="utf-8"),
+        parameters=parameters,
     )
-    production = execute_query(
-        config,
-        connection_name=production_connection,
-        sql=sql_body(baseline_path.read_text(encoding="utf-8")),
-        parameters=active_parameters,
-    )
-    comparison = compare_rows(candidate, production)
     payload.update(
         {
             "status": comparison.status,
@@ -99,6 +93,71 @@ def compare_to_production(
     return payload
 
 
+def compare_application(
+    config: SqlctlConfig,
+    app_name: str,
+    *,
+    candidate_connection: str,
+    production_connection: str,
+    parameters: dict[str, object] | None = None,
+) -> dict[str, object]:
+    repository = Repository(config.storage_path)
+    query_outputs: list[dict[str, object]] = []
+    with repository.connect() as connection:
+        rows = repository.queries_by_app(connection, app_name)
+        if not rows:
+            raise ComparisonError(
+                f"Managed queries not found for application: {app_name}"
+            )
+
+        for row in rows:
+            baseline_path = Path(str(row["managed_path"]))
+            if not baseline_path.exists():
+                raise ComparisonError(
+                    f"Managed production baseline not found: {baseline_path}"
+                )
+            sql_text = baseline_path.read_text(encoding="utf-8")
+            metadata = parse_metadata(sql_text)
+            latest = repository.latest_revision(connection, metadata)
+            candidate, production, comparison = _compare_sql_texts(
+                config,
+                candidate_connection=candidate_connection,
+                production_connection=production_connection,
+                candidate_sql_text=sql_text,
+                production_sql_text=sql_text,
+                parameters=parameters,
+            )
+            query_outputs.append(
+                {
+                    "identity_key": identity_key(metadata),
+                    "query_name": metadata.query_name,
+                    "connection_name": metadata.connection_name,
+                    "app_name": metadata.app_name,
+                    "status": comparison.status,
+                    "baseline": {
+                        "managed_path": str(baseline_path),
+                        "version": latest.version if latest else None,
+                    },
+                    "candidate": _result_summary(candidate),
+                    "production": _result_summary(production),
+                    "comparison": comparison.to_dict(),
+                }
+            )
+
+    different_count = sum(
+        1 for query_output in query_outputs if query_output["status"] == "different"
+    )
+    return {
+        "ok": True,
+        "status": "matched" if different_count == 0 else "different",
+        "app_name": app_name,
+        "query_count": len(query_outputs),
+        "matched_count": len(query_outputs) - different_count,
+        "different_count": different_count,
+        "queries": query_outputs,
+    }
+
+
 def compare_rows(candidate: QueryResult, production: QueryResult) -> RowComparison:
     candidate_counter = Counter(_canonical_row(row) for row in candidate.rows)
     production_counter = Counter(_canonical_row(row) for row in production.rows)
@@ -112,6 +171,31 @@ def compare_rows(candidate: QueryResult, production: QueryResult) -> RowComparis
         missing_from_candidate=tuple(_decode_rows(missing)),
         unexpected_in_candidate=tuple(_decode_rows(unexpected)),
     )
+
+
+def _compare_sql_texts(
+    config: SqlctlConfig,
+    *,
+    candidate_connection: str,
+    production_connection: str,
+    candidate_sql_text: str,
+    production_sql_text: str,
+    parameters: dict[str, object] | None,
+) -> tuple[QueryResult, QueryResult, RowComparison]:
+    active_parameters = parameters or {}
+    candidate = execute_query(
+        config,
+        connection_name=candidate_connection,
+        sql=sql_body(candidate_sql_text),
+        parameters=active_parameters,
+    )
+    production = execute_query(
+        config,
+        connection_name=production_connection,
+        sql=sql_body(production_sql_text),
+        parameters=active_parameters,
+    )
+    return candidate, production, compare_rows(candidate, production)
 
 
 def _result_summary(result: QueryResult) -> dict[str, object]:

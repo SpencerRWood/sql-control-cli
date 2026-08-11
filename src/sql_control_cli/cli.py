@@ -6,7 +6,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from .comparison import compare_to_production
+from .comparison import compare_application, compare_to_production
 from .config import load_config
 from .database import (
     execute_query,
@@ -145,6 +145,19 @@ def main(argv: list[str] | None = None) -> int:
         "--profile", default="default", help="Validation profile name."
     )
     compare_parser.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        help="Bind a named parameter as NAME=VALUE.",
+    )
+
+    compare_app_parser = subparsers.add_parser(
+        "compare-app", help="Compare all managed SQL for an application."
+    )
+    compare_app_parser.add_argument("app_name")
+    compare_app_parser.add_argument("--candidate-connection", required=True)
+    compare_app_parser.add_argument("--production-connection", required=True)
+    compare_app_parser.add_argument(
         "--param",
         action="append",
         default=[],
@@ -314,6 +327,14 @@ def _run(args: argparse.Namespace, config) -> int:
         if not output["ok"]:
             _emit(output, json_output=args.json, stream=sys.stderr)
             return 2
+    elif args.command == "compare-app":
+        output = compare_application(
+            config,
+            args.app_name,
+            candidate_connection=args.candidate_connection,
+            production_connection=args.production_connection,
+            parameters=parse_parameters(args.param),
+        )
     else:
         raise ValueError(f"Unsupported command: {args.command}")
     _emit(output, json_output=args.json)

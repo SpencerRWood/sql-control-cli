@@ -116,12 +116,22 @@ class Repository:
                 (identity_key, version, source_hash, source_path, managed_path)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (identity_key(metadata), version, source_hash, str(source_path), str(managed_path)),
+            (
+                identity_key(metadata),
+                version,
+                source_hash,
+                str(source_path),
+                str(managed_path),
+            ),
         )
-        row = connection.execute("SELECT * FROM revisions WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        row = connection.execute(
+            "SELECT * FROM revisions WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
         return _revision(row)
 
-    def find_queries(self, connection: sqlite3.Connection, term: str) -> list[sqlite3.Row]:
+    def find_queries(
+        self, connection: sqlite3.Connection, term: str
+    ) -> list[sqlite3.Row]:
         like = f"%{term}%"
         return list(
             connection.execute(
@@ -137,6 +147,20 @@ class Repository:
     def all_queries(self, connection: sqlite3.Connection) -> list[sqlite3.Row]:
         return list(connection.execute("SELECT * FROM queries ORDER BY query_name"))
 
+    def queries_by_app(
+        self, connection: sqlite3.Connection, app_name: str
+    ) -> list[sqlite3.Row]:
+        return list(
+            connection.execute(
+                """
+                SELECT * FROM queries
+                WHERE app_name = ?
+                ORDER BY query_name, connection_name
+                """,
+                (app_name,),
+            )
+        )
+
     def history(self, connection: sqlite3.Connection, key: str) -> list[Revision]:
         rows = connection.execute(
             "SELECT * FROM revisions WHERE identity_key = ? ORDER BY version",
@@ -145,7 +169,9 @@ class Repository:
         return [_revision(row) for row in rows]
 
     def query(self, connection: sqlite3.Connection, key: str) -> sqlite3.Row | None:
-        return connection.execute("SELECT * FROM queries WHERE identity_key = ?", (key,)).fetchone()
+        return connection.execute(
+            "SELECT * FROM queries WHERE identity_key = ?", (key,)
+        ).fetchone()
 
 
 def _revision(row: sqlite3.Row) -> Revision:

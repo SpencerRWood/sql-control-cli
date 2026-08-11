@@ -92,3 +92,17 @@ sqlctl compare path/to/query.sql \
 identity, and compares result rows without depending on database row order. Queries without a
 managed baseline return `status: first_time`; existing baselines return `matched` or `different`
 with deterministic row differences.
+
+Compare every managed query for an application:
+
+```bash
+sqlctl compare-app "Defined Benefits" \
+  --candidate-connection candidate \
+  --production-connection production \
+  --param active=1 \
+  --json
+```
+
+`compare-app` loads managed queries by exact `App_Name`, compares each query against the same
+candidate and production connections, and returns aggregate counts plus per-query comparison
+details.
