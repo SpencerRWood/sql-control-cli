@@ -292,7 +292,13 @@ def _validate_commented_out_sql(
 
 def _looks_like_disabled_sql_comment(normalized_comment: str) -> bool:
     if re.search(
-        r"\b(select|join|where|insert|update|delete|merge)\b",
+        r"^\s*\(?\s*(?:select|insert|update|delete|merge)\b",
+        normalized_comment,
+    ):
+        return True
+    if re.search(
+        r"^\s*\(?\s*(?:join|inner\s+join|left\s+join|right\s+join|"
+        r"full\s+join|cross\s+join|where)\b",
         normalized_comment,
     ):
         return True

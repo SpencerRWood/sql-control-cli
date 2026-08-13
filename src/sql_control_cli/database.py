@@ -353,10 +353,35 @@ def _top_level_statement_end(sql: str, start: int) -> int:
             depth += 1
         elif char == ")":
             depth = max(0, depth - 1)
-        elif depth == 0 and char == ";":
+        elif depth == 0 and (
+            char == ";"
+            or (index > start and _starts_following_statement(sql, index))
+        ):
             return index
         index += 1
     return len(sql)
+
+
+def _starts_following_statement(sql: str, index: int) -> bool:
+    previous = sql[index - 1] if index > 0 else ""
+    if previous and not previous.isspace():
+        return False
+    lowered = sql.lower()
+    return any(
+        _word_at(lowered, index, word)
+        for word in (
+            "declare",
+            "create",
+            "drop",
+            "insert",
+            "update",
+            "delete",
+            "merge",
+            "exec",
+            "execute",
+            "set",
+        )
+    )
 
 
 def strip_top_level_order_by(sql: str) -> str:

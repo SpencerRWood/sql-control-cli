@@ -447,6 +447,25 @@ from final_rows;
     )
 
 
+def test_column_probe_stops_before_cleanup_statement_without_semicolon() -> None:
+    sql = """
+DECLARE @p1 char(50)
+
+select participant_id, name
+from #results
+where participant_id = @participant_id
+drop table #results
+"""
+
+    assert column_probe_sql(sql) == (
+        "select * from (\n"
+        "select participant_id, name\n"
+        "from #results\n"
+        "where participant_id = @participant_id\n"
+        ") as sqlctl_column_probe where 1 = 0"
+    )
+
+
 def write_validation_config(path: Path) -> Path:
     config = path / "sqlctl.toml"
     config.write_text(
@@ -795,6 +814,47 @@ from participants
 where participant_id = @participant_id;
 
 --Fail1 bcd is les than process date (not deceased and benf_calc_c = 2) THEN ben_elig_d is no more than 6 months ago and is no more than 30 days in the future (between -6 months and + 30 days)
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
+
+
+def test_validate_business_rule_comment_with_select_word_is_not_disabled_sql(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+--Fail2 Select ATT Plans/Executive (must wait 6 months after term to receive a payment)
 """,
         encoding="utf-8",
     )
