@@ -144,7 +144,11 @@ class MSSQLAdapter:
             with pyodbc.connect(self._connection_string()) as connection:
                 cursor = connection.cursor()
                 cursor.execute(executable_sql, *positional_parameters)
-                rows = cursor.fetchall() if cursor.description else []
+                rows = []
+                while cursor.description is None and cursor.nextset():
+                    pass
+                if cursor.description:
+                    rows = cursor.fetchall()
         except pyodbc.Error as err:
             raise DatabaseError(
                 f"MSSQL query failed for connection '{self.name}': {err}"
@@ -290,24 +294,42 @@ def query_columns(
     sql: str,
     source_name: str | None = None,
 ) -> tuple[str, ...]:
+    driver = get_connection_config(config, connection_name).driver
     query_sql = final_query_select_statement(sql)
     if query_sql is None:
         raise DatabaseError("Could not resolve final query SELECT statement.")
     return execute_query(
         config,
         connection_name=connection_name,
-        sql=column_probe_sql(query_sql),
+        sql=column_probe_sql(sql if driver == "mssql" else query_sql),
         parameters=probe_parameters(query_sql),
         source_name=source_name,
     ).columns
 
 
 def column_probe_sql(sql: str) -> str:
-    probe_source = strip_top_level_order_by(sql.rstrip().rstrip(";"))
-    return f"select * from (\n{probe_source}\n) as sqlctl_column_probe where 1 = 0"
+    query_sql = final_query_select_statement(sql) or sql
+    setup_sql = _setup_sql_before_final_select(sql)
+    probe_source = strip_top_level_order_by(query_sql.rstrip().rstrip(";"))
+    probe_sql = (
+        "select * from (\n"
+        f"{probe_source}\n"
+        ") as sqlctl_column_probe where 1 = 0"
+    )
+    if not setup_sql:
+        return probe_sql
+    return f"{setup_sql.rstrip().rstrip(';')};\n{probe_sql}"
 
 
 def final_query_select_statement(sql: str) -> str | None:
+    bounds = final_query_select_bounds(sql)
+    if bounds is None:
+        return None
+    start, end = bounds
+    return sql[start:end].strip()
+
+
+def final_query_select_bounds(sql: str) -> tuple[int, int] | None:
     lowered = sql.lower()
     depth = 0
     index = 0
@@ -342,7 +364,15 @@ def final_query_select_statement(sql: str) -> str | None:
         return None
 
     end = _top_level_statement_end(sql, final_select_start)
-    return sql[final_statement_start:end].strip()
+    return final_statement_start, end
+
+
+def _setup_sql_before_final_select(sql: str) -> str:
+    bounds = final_query_select_bounds(sql)
+    if bounds is None:
+        return ""
+    final_statement_start, _end = bounds
+    return sql[:final_statement_start].strip()
 
 
 def _top_level_statement_end(sql: str, start: int) -> int:

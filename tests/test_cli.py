@@ -436,6 +436,33 @@ def test_column_probe_sql_and_parameters_are_zero_row_safe() -> None:
     assert probe_parameters(sql) == {"participant_id": None}
 
 
+def test_column_probe_preserves_setup_before_final_select() -> None:
+    sql = """
+declare @failure char(50)
+set @failure = 'ok'
+
+create table #results (participant_id int, error_reason varchar(20))
+insert into #results values (1, @failure)
+
+select participant_id, error_reason
+from #results
+where error_reason = @failure
+order by participant_id;
+"""
+
+    assert column_probe_sql(sql) == (
+        "declare @failure char(50)\n"
+        "set @failure = 'ok'\n\n"
+        "create table #results (participant_id int, error_reason varchar(20))\n"
+        "insert into #results values (1, @failure);\n"
+        "select * from (\n"
+        "select participant_id, error_reason\n"
+        "from #results\n"
+        "where error_reason = @failure\n"
+        ") as sqlctl_column_probe where 1 = 0"
+    )
+
+
 def test_column_probe_strips_only_final_top_level_order_by() -> None:
     sql = (
         "select participant_id, "
