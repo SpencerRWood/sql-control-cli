@@ -99,8 +99,8 @@ Implemented validation rules:
 - `allowed_team`: when `Team` is present and `allowed_teams` is configured, limits it to allowed values.
 - `allowed_app`: optionally limits `App_Name` to `allowed_apps`.
 - `comparison_keys_required`: implemented for opt-in legacy profiles, but active default profiles do not require `Comparison Keys`.
-- `missing_input_parameters`: warns when no live SQLCTL input marker like `<|>ClientID<|>` is present.
-- `unused_input_parameters`: flags SQLCTL input markers that appear only in comments.
+- `missing_input_parameters`: retained for legacy profiles; active validation reports missing SQLCTL markers through `unused_input_parameters`.
+- `unused_input_parameters`: warns when the full SQL text has no SQLCTL input marker like `<|>ClientID<|>`.
 - `commented_out_sql`: flags comments that look like disabled SQL logic.
 - `select_star`: flags `SELECT *`, including `SELECT TOP ... *` and `SELECT DISTINCT *`.
 - `order_by_without_justification`: requires a reason comment for `ORDER BY`.

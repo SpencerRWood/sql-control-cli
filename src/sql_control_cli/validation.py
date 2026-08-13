@@ -251,41 +251,21 @@ def _validate_comparison_keys(metadata: QueryMetadata) -> list[ValidationIssue]:
 def _validate_missing_input_parameters(
     sql_text: str, live_sql: str
 ) -> list[ValidationIssue]:
-    if _input_parameters(live_sql):
-        return []
-    return [
-        ValidationIssue(
-            "missing_input_parameters",
-            "warning",
-            "No live SQLCTL input parameter marker was found.",
-            line=_first_live_sql_line(sql_text),
-        )
-    ]
+    return []
 
 
 def _validate_unused_input_parameters(
     sql_text: str, live_sql: str, comments: tuple[str, ...]
 ) -> list[ValidationIssue]:
-    live_parameters = _input_parameters(live_sql)
-    issues: list[ValidationIssue] = []
-    reported: set[str] = set()
-    for line_number, comment in _comment_logic_lines(sql_text, comments):
-        normalized = _normalize_sql(comment)
-        if _looks_like_disabled_sql_comment(normalized):
-            continue
-        for parameter in sorted(_input_parameters(comment) - live_parameters):
-            if parameter in reported:
-                continue
-            reported.add(parameter)
-            issues.append(
-                ValidationIssue(
-                    "unused_input_parameters",
-                    "error",
-                    f"Input parameter appears only in comments: {parameter}",
-                    line=line_number,
-                )
-            )
-    return issues
+    if _input_parameters(live_sql):
+        return []
+    return [
+        ValidationIssue(
+            "unused_input_parameters",
+            "warning",
+            "No SQLCTL input parameter marker was found.",
+        )
+    ]
 
 
 def _validate_commented_out_sql(
