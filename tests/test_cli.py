@@ -329,8 +329,8 @@ trust_server_certificate = true
 
 def test_mssql_named_parameters_translate_for_pyodbc() -> None:
     sql, parameters = mssql_named_parameters(
-        "select * from dbo.Participants where participant_id = @participant_id "
-        "and plan_id = @plan_id or fallback_id = @participant_id",
+        "select * from dbo.Participants where participant_id = :participant_id "
+        "and plan_id = :plan_id or fallback_id = :participant_id",
         {"participant_id": 123, "plan_id": "011"},
     )
 
@@ -339,6 +339,22 @@ def test_mssql_named_parameters_translate_for_pyodbc() -> None:
         "and plan_id = ? or fallback_id = ?"
     )
     assert parameters == (123, "011", 123)
+
+
+def test_mssql_named_parameters_leave_tsql_variables_in_script() -> None:
+    sql, parameters = mssql_named_parameters(
+        "declare @population int = 1;\n"
+        "select * from dbo.Participants "
+        "where active = :active and population = @population",
+        {"active": 1, "population": 2},
+    )
+
+    assert sql == (
+        "declare @population int = 1;\n"
+        "select * from dbo.Participants "
+        "where active = ? and population = @population"
+    )
+    assert parameters == (1,)
 
 
 def test_sqlctl_input_placeholders_are_distinct_from_sql_variables() -> None:
@@ -353,9 +369,9 @@ def test_sqlctl_input_placeholders_are_distinct_from_sql_variables() -> None:
     assert (
         sqlctl_input_placeholders_to_named_parameters(sql, driver="mssql")
         == "declare @population int = 1;\n"
-        "select * from dbo.Participants where active = @active "
-        "and participant_id = @participant_id "
-        "and retry_active = @active;"
+        "select * from dbo.Participants where active = :active "
+        "and participant_id = :participant_id "
+        "and retry_active = :active;"
     )
     assert (
         sqlctl_input_placeholders_to_named_parameters(sql, driver="sqlite")

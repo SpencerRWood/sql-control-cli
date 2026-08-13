@@ -326,9 +326,9 @@ def _stored_query_lookup_sql(
         return (
             f"select top 1 {sql_column} as sql_text\n"
             f"from {table}\n"
-            "where Query_Name = @query_name\n"
-            "and Connection_Name = @connection_name\n"
-            "and App_Name = @app_name"
+            "where Query_Name = :query_name\n"
+            "and Connection_Name = :connection_name\n"
+            "and App_Name = :app_name"
         )
     return (
         f"select {sql_column} as sql_text\n"

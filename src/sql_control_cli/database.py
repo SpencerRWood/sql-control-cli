@@ -438,9 +438,8 @@ def sqlctl_input_parameter_names(sql: str) -> tuple[str, ...]:
 
 
 def sqlctl_input_placeholders_to_named_parameters(sql: str, *, driver: str) -> str:
-    prefix = "@" if driver == "mssql" else ":"
     return SQLCTL_INPUT_PARAMETER_RE.sub(
-        lambda match: f"{prefix}{match.group(1)}", sql
+        lambda match: f":{match.group(1)}", sql
     )
 
 
@@ -460,7 +459,9 @@ def named_parameter_names(sql: str) -> tuple[str, ...]:
 def mssql_named_parameters(
     sql: str, parameters: dict[str, object]
 ) -> tuple[str, tuple[object, ...]]:
-    normalized_parameters = {key.lower().lstrip("@"): value for key, value in parameters.items()}
+    normalized_parameters = {
+        key.lower().lstrip("@:"): value for key, value in parameters.items()
+    }
     positional_parameters: list[object] = []
 
     def replace(match: re.Match[str]) -> str:
@@ -469,7 +470,7 @@ def mssql_named_parameters(
         return "?"
 
     return (
-        re.sub(r"(?<![@\w])@([A-Za-z_][A-Za-z0-9_]*)", replace, sql),
+        re.sub(r"(?<![:\w]):([A-Za-z_][A-Za-z0-9_]*)", replace, sql),
         tuple(positional_parameters),
     )
 
