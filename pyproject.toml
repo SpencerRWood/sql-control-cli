@@ -1,6 +1,6 @@
 [project]
 name = "sql-control-cli"
-version = "0.1.0"
+version = "0.1.1"
 requires-python = ">=3.11"
 dependencies = []
 
@@ -60,6 +60,25 @@ error_rules = [
   "write_operation",
 ]
 warning_rules = ["column_compare"]
+
+[tool.sqlctl.validation.profiles.default]
+enabled_rules = [
+  "required_metadata",
+  "allowed_team",
+  "allowed_app",
+  "comparison_keys_required",
+  "missing_input_parameters",
+  "unused_input_parameters",
+  "commented_out_sql",
+  "select_star",
+  "order_by_without_justification",
+  "top_without_justification",
+  "hard_coded_sensitive_literals",
+  "debug_columns",
+  "nolock_usage",
+  "write_operation",
+  "column_compare",
+]
 
 [tool.sqlctl.validation.profiles.strict]
 enabled_rules = [
