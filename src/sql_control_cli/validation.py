@@ -184,7 +184,7 @@ def validate_sql_file(
         profile_name,
         enabled_rules,
         metadata,
-        tuple(issues),
+        _sort_issues_by_line(issues),
         force_passed=force_pass and bool(issues),
     )
 
@@ -413,7 +413,10 @@ def _validate_hard_coded_sensitive_literals(
 
 def _validate_debug_columns(sql_text: str, live_sql: str) -> list[ValidationIssue]:
     normalized = _normalize_sql(live_sql)
-    pattern = r"\bas\s+\[?(?:debug\w*|row_count|error\w*|test\w*|tmp\w*)\]?\b"
+    pattern = (
+        r"\bas\s+\[?(?:debug\w*|row_count|error|error_count|error_msg|"
+        r"test\w*|tmp\w*)\]?\b"
+    )
     if re.search(pattern, normalized):
         return [
             ValidationIssue(
@@ -424,6 +427,18 @@ def _validate_debug_columns(sql_text: str, live_sql: str) -> list[ValidationIssu
             )
         ]
     return []
+
+
+def _sort_issues_by_line(issues: list[ValidationIssue]) -> tuple[ValidationIssue, ...]:
+    ordered = sorted(
+        enumerate(issues),
+        key=lambda item: (
+            item[1].line is None,
+            item[1].line if item[1].line is not None else 0,
+            item[0],
+        ),
+    )
+    return tuple(issue for _index, issue in ordered)
 
 
 def _validate_nolock_usage(sql_text: str, live_sql: str) -> list[ValidationIssue]:

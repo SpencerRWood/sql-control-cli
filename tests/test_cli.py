@@ -1018,6 +1018,199 @@ where participant_id = '123456789';
     assert "Issues:" in output
     assert "- [error] select_star (line 7):" in output
     assert "- [error] hard_coded_sensitive_literals (line 9):" in output
+    assert "\033[" not in output
+
+
+def test_validate_text_output_can_be_colorized(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select *
+from participants
+where participant_id = '123456789';
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--color",
+                "always",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr().err
+    assert "Validation \033[31mfailed\033[0m:" in output
+    assert "- [\033[31merror\033[0m] select_star (\033[34mline 7\033[0m):" in output
+
+
+def test_validate_json_output_is_not_colorized(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select *
+from participants
+where participant_id = '123456789';
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--color",
+                "always",
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr().err
+    assert "\033[" not in output
+    assert json.loads(output)["status"] == "failed"
+
+
+def test_validate_orders_issues_by_line_number(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select *
+from participants with (nolock)
+where participant_id = '123456789'
+order by participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    lines = [issue["line"] for issue in output["issues"]]
+    assert lines == sorted(lines)
+
+
+def test_validate_error_reason_alias_is_not_debug_column(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select
+    case when participant_id is null then 'missing' end as Error_Reason
+from participants
+where participant_id = @participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["issues"] == []
+
+
+def test_validate_debug_alias_still_flags_debug_column(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id as debug_participant_id
+from participants
+where participant_id = @participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert [issue["rule"] for issue in output["issues"]] == ["debug_columns"]
 
 
 def test_validate_write_operation_allows_temp_tables(tmp_path: Path, capsys) -> None:

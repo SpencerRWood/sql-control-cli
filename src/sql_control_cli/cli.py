@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -52,6 +53,12 @@ def main(argv: list[str] | None = None) -> int:
         "--managed-root", type=Path, help="Override the managed SQL root."
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON output.")
+    parser.add_argument(
+        "--color",
+        choices=("auto", "always", "never"),
+        default="auto",
+        help="Colorize human-readable terminal output.",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     metadata_parser = subparsers.add_parser("metadata", help="Parse SQL metadata.")
@@ -245,7 +252,11 @@ def _run(args: argparse.Namespace, config) -> int:
                 stream=sys.stderr if not result.passed else None,
             )
         else:
-            _emit_validation_result(result, stream=sys.stderr if not result.passed else None)
+            _emit_validation_result(
+                result,
+                color=args.color,
+                stream=sys.stderr if not result.passed else None,
+            )
         return 0 if result.passed else 2
     elif args.command == "prepare":
         validation = validate_sql_file(
@@ -409,18 +420,62 @@ def _emit(payload: object, *, json_output: bool, stream=None) -> None:
         print(payload, file=active_stream)
 
 
-def _emit_validation_result(result, *, stream=None) -> None:
+ANSI_COLORS = {
+    "reset": "\033[0m",
+    "red": "\033[31m",
+    "green": "\033[32m",
+    "yellow": "\033[33m",
+    "blue": "\033[34m",
+    "bold": "\033[1m",
+}
+
+
+def _emit_validation_result(result, *, color: str = "auto", stream=None) -> None:
     active_stream = sys.stdout if stream is None else stream
-    print(f"Validation {result.status}: {result.sql_file}", file=active_stream)
+    use_color = _should_colorize(color, active_stream)
+    status = _color_text(result.status, _status_color(result.status), use_color)
+    print(f"Validation {status}: {result.sql_file}", file=active_stream)
     print(f"Profile: {result.profile_name}", file=active_stream)
     print(f"Rules: {', '.join(result.enabled_rules)}", file=active_stream)
     if not result.issues:
-        print("No issues found.", file=active_stream)
+        print(_color_text("No issues found.", "green", use_color), file=active_stream)
         return
-    print("Issues:", file=active_stream)
+    print(_color_text("Issues:", "bold", use_color), file=active_stream)
     for issue in result.issues:
+        severity = _color_text(issue.severity, _severity_color(issue.severity), use_color)
         location = f"line {issue.line}" if issue.line is not None else "line n/a"
+        location = _color_text(location, "blue", use_color)
         print(
-            f"- [{issue.severity}] {issue.rule} ({location}): {issue.message}",
+            f"- [{severity}] {issue.rule} ({location}): {issue.message}",
             file=active_stream,
         )
+
+
+def _should_colorize(color: str, stream) -> bool:
+    if color == "always":
+        return True
+    if color == "never" or os.environ.get("NO_COLOR") is not None:
+        return False
+    return bool(getattr(stream, "isatty", lambda: False)())
+
+
+def _color_text(value: str, color: str, enabled: bool) -> str:
+    if not enabled:
+        return value
+    return f"{ANSI_COLORS[color]}{value}{ANSI_COLORS['reset']}"
+
+
+def _status_color(status: str) -> str:
+    return {
+        "passed": "green",
+        "warning": "yellow",
+        "failed": "red",
+        "forced": "yellow",
+    }.get(status, "bold")
+
+
+def _severity_color(severity: str) -> str:
+    return {
+        "error": "red",
+        "warning": "yellow",
+    }.get(severity, "bold")
