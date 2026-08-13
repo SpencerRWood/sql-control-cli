@@ -126,7 +126,9 @@ column_compare_file = "reference/participant_lookup.sql"
 
 If `column_compare_source` and `column_compare_file` are omitted, `sqlctl` attempts to find a
 repository source using normalized names derived from `Query_Name`, `Connection_Name`, and
-`App_Name`.
+`App_Name`. If no matching source is found and the active profile has
+`column_compare_connection`, `sqlctl` probes the current SQL against that connection. The built-in
+profiles use `rpa_mssql` for this fallback.
 
 ## Database And Repository Sources
 
@@ -155,6 +157,10 @@ SQLCTL_RPA_MSSQL_PASSWORD=your_password
 The active template is equivalent to:
 
 ```toml
+[tool.sqlctl.validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+column_compare_connection = "rpa_mssql"
+
 [tool.sqlctl.database.connection_templates.rpa_mssql]
 driver = "mssql"
 sql_driver = "ODBC Driver 17 for SQL Server"

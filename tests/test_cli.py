@@ -49,6 +49,10 @@ def test_pyproject_documents_sqlctl_runtime_contract() -> None:
         "required_metadata",
         "column_compare",
     ]
+    assert (
+        sqlctl["validation"]["profiles"]["columns"]["column_compare_connection"]
+        == "rpa_mssql"
+    )
 
     mssql_fields = sqlctl["database"]["connection_fields"]["mssql"]
     assert mssql_fields["required"] == [
@@ -243,6 +247,7 @@ SQLCTL_RPA_MSSQL_PASSWORD=rpa-password
         """
 [tool.sqlctl.validation.profiles.strict]
 enabled_rules = ["required_metadata", "comparison_keys_required"]
+column_compare_connection = "rpa_mssql"
 
 [tool.sqlctl.database.connection_templates.rpa_mssql]
 driver = "mssql"
@@ -266,6 +271,7 @@ trust_server_certificate = true
         "required_metadata",
         "comparison_keys_required",
     )
+    assert config.validation_profiles["strict"].column_compare_connection == "rpa_mssql"
     assert connection.driver == "mssql"
     assert connection.sql_driver == "ODBC Driver 17 for SQL Server"
     assert connection.server == "rpa-server"
@@ -896,6 +902,60 @@ from production_participants;
     assert output["status"] == "passed"
 
 
+def test_validate_column_compare_uses_fallback_connection(
+    tmp_path: Path, capsys
+) -> None:
+    database_path = tmp_path / "reference.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("CREATE TABLE participants (participant_id INTEGER, name TEXT)")
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants;
+""",
+        encoding="utf-8",
+    )
+    config = tmp_path / "sqlctl.toml"
+    config.write_text(
+        f"""
+[validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+column_compare_connection = "warehouse"
+
+[database.connections.warehouse]
+driver = "sqlite"
+path = "{database_path}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "columns",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
+
+
 def test_validate_column_compare_reports_unresolved_reference(
     tmp_path: Path, capsys
 ) -> None:
@@ -931,7 +991,9 @@ enabled_rules = ["required_metadata", "column_compare"]
     assert output["status"] == "warning"
     assert output["issues"][0]["rule"] == "column_compare"
     assert output["issues"][0]["severity"] == "warning"
-    assert "no reference query source or SQL file" in output["issues"][0]["message"]
+    assert "no reference query source, SQL file, or fallback connection" in output[
+        "issues"
+    ][0]["message"]
 
 
 def test_validate_column_compare_warning_does_not_hide_errors(

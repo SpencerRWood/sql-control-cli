@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import SqlctlConfig, ValidationProfile
-from .database import DatabaseError, query_source_columns
+from .database import DatabaseError, query_columns, query_source_columns
 from .metadata import (
     MetadataError,
     QueryMetadata,
@@ -463,7 +463,7 @@ def _validate_column_compare(
         ]
 
     reference_columns, reference_error = _resolve_column_compare_reference_columns(
-        metadata, config, profile
+        sql_text, metadata, config, profile
     )
     if reference_error:
         return [
@@ -577,6 +577,7 @@ def _comment_logic_lines(comments: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _resolve_column_compare_reference_columns(
+    sql_text: str,
     metadata: QueryMetadata,
     config: SqlctlConfig,
     profile: ValidationProfile,
@@ -600,9 +601,11 @@ def _resolve_column_compare_reference_columns(
         source = sources.get(source_name)
         if source and source.sql:
             return _reference_source_columns(config, source_name)
+    if profile.column_compare_connection:
+        return _connection_sql_columns(config, profile.column_compare_connection, sql_text)
     return (
         None,
-        "Column compare was requested but no reference query source or SQL file could be resolved.",
+        "Column compare was requested but no reference query source, SQL file, or fallback connection could be resolved.",
     )
 
 
@@ -613,6 +616,18 @@ def _reference_source_columns(
         return query_source_columns(config, source_name), None
     except DatabaseError as err:
         return None, f"Column compare reference could not be resolved: {err}"
+
+
+def _connection_sql_columns(
+    config: SqlctlConfig, connection_name: str, sql_text: str
+) -> tuple[tuple[str, ...] | None, str | None]:
+    try:
+        return (
+            query_columns(config, connection_name=connection_name, sql=sql_text),
+            None,
+        )
+    except DatabaseError as err:
+        return None, f"Column compare fallback connection could not be resolved: {err}"
 
 
 def _candidate_reference_source_names(metadata: QueryMetadata) -> tuple[str, ...]:

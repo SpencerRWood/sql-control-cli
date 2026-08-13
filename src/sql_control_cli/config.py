@@ -14,6 +14,7 @@ class ValidationProfile:
     allowed_apps: tuple[str, ...] = ()
     column_compare_source: str = ""
     column_compare_file: Path | None = None
+    column_compare_connection: str = ""
 
 
 @dataclass(frozen=True)
@@ -313,6 +314,7 @@ def _validation_profile(raw_profile: Any) -> ValidationProfile:
         column_compare_file=Path(str(profile["column_compare_file"])).expanduser()
         if profile.get("column_compare_file")
         else None,
+        column_compare_connection=str(profile.get("column_compare_connection") or ""),
     )
 
 

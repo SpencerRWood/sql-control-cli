@@ -1,6 +1,6 @@
 [project]
 name = "sql-control-cli"
-version = "0.1.2"
+version = "0.1.3"
 requires-python = ">=3.11"
 dependencies = []
 
@@ -61,6 +61,7 @@ error_rules = [
 warning_rules = ["column_compare"]
 
 [tool.sqlctl.validation.profiles.default]
+column_compare_connection = "rpa_mssql"
 enabled_rules = [
   "required_metadata",
   "allowed_app",
@@ -78,6 +79,7 @@ enabled_rules = [
 ]
 
 [tool.sqlctl.validation.profiles.strict]
+column_compare_connection = "rpa_mssql"
 enabled_rules = [
   "required_metadata",
   "allowed_app",
@@ -96,6 +98,7 @@ enabled_rules = [
 
 [tool.sqlctl.validation.profiles.columns]
 enabled_rules = ["required_metadata", "column_compare"]
+column_compare_connection = "rpa_mssql"
 
 [tool.sqlctl.database.connection_fields.sqlite]
 required = ["driver", "path"]
