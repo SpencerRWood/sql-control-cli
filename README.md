@@ -44,16 +44,18 @@ variables set in the terminal still take precedence over values in `.env`.
 Validate a SQL file before capture:
 
 ```bash
-sqlctl validate path/to/query.sql --profile strict --json
+sqlctl validate path/to/query.sql --json
 ```
 
 Create a managed copy only after validation passes:
 
 ```bash
-sqlctl prepare path/to/query.sql --profile strict --json
+sqlctl prepare path/to/query.sql --json
 ```
 
-Validation profiles live in `sqlctl.toml`:
+The active `default` and `strict` profiles are supplied by the project `pyproject.toml` and run the
+implemented validation ruleset. Use `sqlctl.toml` only for local profile overrides, such as allowed
+team/app lists:
 
 ```toml
 [validation.profiles.strict]
@@ -71,7 +73,8 @@ enabled_rules = [
   "hard_coded_sensitive_literals",
   "debug_columns",
   "nolock_usage",
-  "write_operation"
+  "write_operation",
+  "column_compare"
 ]
 allowed_teams = ["Benefits"]
 allowed_apps = ["Defined Benefits"]

@@ -32,6 +32,9 @@ def test_pyproject_documents_sqlctl_runtime_contract() -> None:
     assert sqlctl["validation"]["default_rules"] == ["required_metadata"]
     assert sqlctl["validation"]["warning_rules"] == ["column_compare"]
     assert "column_compare" not in sqlctl["validation"]["error_rules"]
+    assert tuple(sqlctl["validation"]["profiles"]["default"]["enabled_rules"]) == (
+        DEFAULT_RULES
+    )
     assert tuple(sqlctl["validation"]["profiles"]["strict"]["enabled_rules"]) == (
         DEFAULT_RULES
     )
@@ -69,7 +72,7 @@ Team: Benefits
 Comparison Keys: participant_id
 */
 
-select *
+select participant_id, name
 from participants
 where participant_id = @participant_id;
 """
@@ -1135,6 +1138,9 @@ def test_db_query_reports_missing_source_deterministically(
 
 
 def comparison_fixture(order_by: str = "") -> str:
+    order_by_comment = (
+        "-- order by required for deterministic comparison output\n" if order_by else ""
+    )
     return f"""/*
 Query_Name: Participant Active Lookup
 Connection_Name: Main Warehouse
@@ -1146,6 +1152,7 @@ Comparison Keys: participant_id
 select participant_id, name
 from participants
 where active = :active
+{order_by_comment}\
 {order_by};
 """
 
@@ -1368,6 +1375,7 @@ def test_compare_app_matches_all_managed_queries(tmp_path: Path, capsys) -> None
 select participant_id, name
 from participants
 where active = :active
+-- order by required for deterministic comparison output
 order by participant_id asc;
 """.strip(),
         ),
@@ -1380,6 +1388,7 @@ order by participant_id asc;
 select participant_id, name
 from participants
 where active = :active
+-- order by required for deterministic comparison output
 order by participant_id desc;
 """.strip(),
         ),
@@ -1567,7 +1576,9 @@ def test_deploy_test_updates_changed_query(tmp_path: Path, capsys) -> None:
     assert main(base_args) == 0
     capsys.readouterr()
     source.write_text(
-        sql_fixture().replace("select *", "select participant_id, name"),
+        sql_fixture().replace(
+            "select participant_id, name", "select participant_id, name, active"
+        ),
         encoding="utf-8",
     )
 
@@ -1582,7 +1593,7 @@ def test_deploy_test_updates_changed_query(tmp_path: Path, capsys) -> None:
             (output["identity_key"],),
         ).fetchone()
     assert row[0] == 2
-    assert "select participant_id, name" in row[1]
+    assert "select participant_id, name, active" in row[1]
 
 
 def test_deploy_test_refuses_validation_failure(tmp_path: Path, capsys) -> None:
@@ -1729,7 +1740,7 @@ def test_parity_reports_test_sql_drift(tmp_path: Path, capsys) -> None:
         connection.execute(
             """
             UPDATE published_queries
-            SET sql_text = replace(sql_text, 'select *', 'select participant_id')
+            SET sql_text = replace(sql_text, 'select participant_id, name', 'select participant_id')
             WHERE identity_key = ?
             """,
             (deploy_output["identity_key"],),

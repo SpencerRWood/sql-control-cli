@@ -32,7 +32,7 @@ DEFAULT_RULES = (
 )
 KNOWN_RULES = set(DEFAULT_RULES)
 
-INPUT_PARAMETER_RE = re.compile(r"(?<![@\w])@[A-Za-z_][A-Za-z0-9_]*")
+INPUT_PARAMETER_RE = re.compile(r"(?<![@:\w])[@:][A-Za-z_][A-Za-z0-9_]*")
 REASON_WORDS = (
     "intentional",
     "required",
