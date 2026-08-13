@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import shutil
 import sys
 from pathlib import Path
 
-from .comparison import compare_application, compare_to_production
+from .comparison import (
+    compare_application,
+    compare_to_production,
+    compare_to_rpa_stored_query,
+    rpa_compare_parameter_names,
+)
 from .config import load_config
 from .database import (
     execute_query,
@@ -74,14 +80,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     capture_parser.add_argument("sql_file", type=Path)
 
-    validate_parser = subparsers.add_parser(
-        "validate", help="Validate SQL metadata and workflow readiness."
+    check_parser = subparsers.add_parser(
+        "check", help="Check SQL metadata and workflow readiness rules."
     )
-    validate_parser.add_argument("sql_file", type=Path)
-    validate_parser.add_argument(
+    check_parser.add_argument("sql_file", type=Path)
+    check_parser.add_argument(
         "--profile", default="default", help="Validation profile name."
     )
-    validate_parser.add_argument(
+    check_parser.add_argument(
         "--force-pass",
         action="store_true",
         help="Return success while reporting failures.",
@@ -160,6 +166,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Bind a named parameter as NAME=VALUE.",
     )
 
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Validate SQL results against the stored RPA query resolved from metadata.",
+    )
+    _add_rpa_validate_arguments(validate_parser)
+
     compare_app_parser = subparsers.add_parser(
         "compare-app", help="Compare all managed SQL for an application."
     )
@@ -218,6 +230,39 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
+def _add_rpa_validate_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("sql_file", type=Path)
+    parser.add_argument("--candidate-connection", default="rpa_mssql")
+    parser.add_argument("--store-connection", default="rpa_mssql")
+    parser.add_argument("--profile", default="default", help="Validation profile name.")
+    parser.add_argument(
+        "--param",
+        action="append",
+        default=[],
+        help="Bind a named parameter as NAME=VALUE.",
+    )
+    parser.add_argument(
+        "--param-csv",
+        type=Path,
+        help="Run once per CSV row, mapping columns to input parameter names.",
+    )
+    parser.add_argument(
+        "--no-prompt",
+        action="store_true",
+        help="Do not prompt for missing parameter values.",
+    )
+    parser.add_argument(
+        "--store-table",
+        default="wirpa_dev.dbo.rpa_SQL_Queries",
+        help="RPA query-store table containing stored SQL.",
+    )
+    parser.add_argument(
+        "--store-sql-column",
+        default="SQL_Query",
+        help="Column in --store-table containing stored SQL text.",
+    )
+
+
 def _run(args: argparse.Namespace, config) -> int:
     repository = Repository(config.storage_path)
     if args.command == "metadata":
@@ -238,7 +283,7 @@ def _run(args: argparse.Namespace, config) -> int:
             "managed_path": str(result.managed_path),
             "version": result.revision.version,
         }
-    elif args.command == "validate":
+    elif args.command == "check":
         result = validate_sql_file(
             args.sql_file,
             config,
@@ -366,6 +411,27 @@ def _run(args: argparse.Namespace, config) -> int:
         if not output["ok"]:
             _emit(output, json_output=args.json, stream=sys.stderr)
             return 2
+    elif args.command == "validate":
+        parameter_names = rpa_compare_parameter_names(
+            args.sql_file,
+            config,
+            store_connection=args.store_connection,
+            profile_name=args.profile,
+            store_table=args.store_table,
+            store_sql_column=args.store_sql_column,
+        )
+        if args.param_csv:
+            output = _compare_rpa_csv(args, config)
+        else:
+            parameters = parse_parameters(args.param)
+            if not args.no_prompt:
+                parameters = _prompt_for_missing_parameters(
+                    parameters, parameter_names
+                )
+            output = _compare_rpa_once(args, config, parameters)
+        if not output["ok"]:
+            _emit(output, json_output=args.json, stream=sys.stderr)
+            return 2
     elif args.command == "compare-app":
         output = compare_application(
             config,
@@ -409,6 +475,75 @@ def _query_row(row) -> dict[str, str]:
     }
 
 
+def _prompt_for_missing_parameters(
+    parameters: dict[str, object], parameter_names: tuple[str, ...]
+) -> dict[str, object]:
+    resolved = dict(parameters)
+    existing = {name.lower().lstrip("@") for name in resolved}
+    for name in parameter_names:
+        normalized = name.lower().lstrip("@")
+        if normalized in existing:
+            continue
+        value = input(f"{name}: ")
+        resolved.update(parse_parameters([f"{name}={value}"]))
+        existing.add(normalized)
+    return resolved
+
+
+def _compare_rpa_once(args, config, parameters: dict[str, object]) -> dict[str, object]:
+    return compare_to_rpa_stored_query(
+        args.sql_file,
+        config,
+        candidate_connection=args.candidate_connection,
+        store_connection=args.store_connection,
+        parameters=parameters,
+        profile_name=args.profile,
+        store_table=args.store_table,
+        store_sql_column=args.store_sql_column,
+    )
+
+
+def _compare_rpa_csv(args, config) -> dict[str, object]:
+    base_parameters = parse_parameters(args.param)
+    runs = []
+    for row_number, row_parameters in _csv_parameter_rows(args.param_csv):
+        parameters = {**base_parameters, **row_parameters}
+        result = _compare_rpa_once(args, config, parameters)
+        runs.append(
+            {
+                "row": row_number,
+                "parameters": parameters,
+                "result": result,
+            }
+        )
+    different_count = sum(
+        1 for run in runs if run["result"].get("status") == "different"
+    )
+    return {
+        "ok": all(run["result"].get("ok") for run in runs),
+        "status": "matched" if different_count == 0 else "different",
+        "run_count": len(runs),
+        "different_count": different_count,
+        "runs": runs,
+    }
+
+
+def _csv_parameter_rows(path: Path) -> list[tuple[int, dict[str, object]]]:
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError(f"CSV parameter file has no header row: {path}")
+        rows = []
+        for row_number, row in enumerate(reader, start=2):
+            values = [
+                f"{name}={value}"
+                for name, value in row.items()
+                if name is not None and value is not None and value != ""
+            ]
+            rows.append((row_number, parse_parameters(values)))
+    return rows
+
+
 def _emit(payload: object, *, json_output: bool, stream=None) -> None:
     active_stream = sys.stdout if stream is None else stream
     if json_output:
@@ -443,12 +578,20 @@ def _emit_validation_result(result, *, color: str = "auto", stream=None) -> None
     print(_color_text("Issues:", "bold", use_color), file=active_stream)
     for issue in result.issues:
         severity = _color_text(issue.severity, _severity_color(issue.severity), use_color)
-        location = f"line {issue.line}" if issue.line is not None else "line n/a"
+        location = _issue_location(issue)
         location = _color_text(location, "blue", use_color)
         print(
             f"- [{severity}] {issue.rule} ({location}): {issue.message}",
             file=active_stream,
         )
+
+
+def _issue_location(issue) -> str:
+    if issue.line is None:
+        return "line n/a"
+    if issue.line_end is not None and issue.line_end != issue.line:
+        return f"line {issue.line}-{issue.line_end}"
+    return f"line {issue.line}"
 
 
 def _should_colorize(color: str, stream) -> bool:

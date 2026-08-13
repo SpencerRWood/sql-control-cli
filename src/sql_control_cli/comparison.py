@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import SqlctlConfig
-from .database import QueryResult, execute_query
+from .database import (
+    QueryResult,
+    execute_query,
+    get_connection_config,
+    named_parameter_names,
+)
 from .metadata import identity_key, parse_metadata, sql_body
 from .storage import Repository
 from .validation import validate_sql_file
@@ -158,6 +163,94 @@ def compare_application(
     }
 
 
+def compare_to_rpa_stored_query(
+    sql_file: Path,
+    config: SqlctlConfig,
+    *,
+    candidate_connection: str,
+    store_connection: str,
+    parameters: dict[str, object] | None = None,
+    profile_name: str = "default",
+    store_table: str = "wirpa_dev.dbo.rpa_SQL_Queries",
+    store_sql_column: str = "SQL_Query",
+) -> dict[str, object]:
+    validation = validate_sql_file(sql_file, config, profile_name=profile_name)
+    if not validation.passed:
+        return {"ok": False, "validation": validation.to_dict()}
+
+    sql_text = sql_file.read_text(encoding="utf-8")
+    metadata = parse_metadata(sql_text)
+    reference_sql = _stored_rpa_query_sql(
+        config,
+        connection_name=store_connection,
+        table=store_table,
+        sql_column=store_sql_column,
+        query_name=metadata.query_name,
+        connection_name_value=metadata.connection_name,
+        app_name=metadata.app_name,
+    )
+    if reference_sql is None:
+        raise ComparisonError(
+            "Stored RPA query not found for metadata: "
+            f"Query_Name={metadata.query_name}, "
+            f"Connection_Name={metadata.connection_name}, App_Name={metadata.app_name}"
+        )
+
+    candidate, reference, comparison = _compare_sql_texts(
+        config,
+        candidate_connection=candidate_connection,
+        production_connection=store_connection,
+        candidate_sql_text=sql_text,
+        production_sql_text=reference_sql,
+        parameters=parameters,
+    )
+    return {
+        "ok": True,
+        "status": comparison.status,
+        "metadata": metadata.to_dict(),
+        "validation": validation.to_dict(),
+        "store": {
+            "connection": store_connection,
+            "table": store_table,
+            "sql_column": store_sql_column,
+        },
+        "candidate": _result_summary(candidate),
+        "reference": _result_summary(reference),
+        "comparison": comparison.to_dict(),
+    }
+
+
+def rpa_compare_parameter_names(
+    sql_file: Path,
+    config: SqlctlConfig,
+    *,
+    store_connection: str,
+    profile_name: str = "default",
+    store_table: str = "wirpa_dev.dbo.rpa_SQL_Queries",
+    store_sql_column: str = "SQL_Query",
+) -> tuple[str, ...]:
+    validation = validate_sql_file(sql_file, config, profile_name=profile_name)
+    if not validation.passed:
+        return named_parameter_names(sql_file.read_text(encoding="utf-8"))
+    sql_text = sql_file.read_text(encoding="utf-8")
+    metadata = parse_metadata(sql_text)
+    reference_sql = _stored_rpa_query_sql(
+        config,
+        connection_name=store_connection,
+        table=store_table,
+        sql_column=store_sql_column,
+        query_name=metadata.query_name,
+        connection_name_value=metadata.connection_name,
+        app_name=metadata.app_name,
+    )
+    names = list(named_parameter_names(sql_text))
+    if reference_sql is not None:
+        for name in named_parameter_names(reference_sql):
+            if name.lower() not in {existing.lower() for existing in names}:
+                names.append(name)
+    return tuple(names)
+
+
 def compare_rows(candidate: QueryResult, production: QueryResult) -> RowComparison:
     candidate_counter = Counter(_canonical_row(row) for row in candidate.rows)
     production_counter = Counter(_canonical_row(row) for row in production.rows)
@@ -196,6 +289,55 @@ def _compare_sql_texts(
         parameters=active_parameters,
     )
     return candidate, production, compare_rows(candidate, production)
+
+
+def _stored_rpa_query_sql(
+    config: SqlctlConfig,
+    *,
+    connection_name: str,
+    table: str,
+    sql_column: str,
+    query_name: str,
+    connection_name_value: str,
+    app_name: str,
+) -> str | None:
+    lookup_sql = _stored_query_lookup_sql(config, connection_name, table, sql_column)
+    result = execute_query(
+        config,
+        connection_name=connection_name,
+        sql=lookup_sql,
+        parameters={
+            "query_name": query_name,
+            "connection_name": connection_name_value,
+            "app_name": app_name,
+        },
+    )
+    if not result.rows:
+        return None
+    value = result.rows[0].get("sql_text")
+    return str(value) if value is not None else None
+
+
+def _stored_query_lookup_sql(
+    config: SqlctlConfig, connection_name: str, table: str, sql_column: str
+) -> str:
+    driver = get_connection_config(config, connection_name).driver
+    if driver == "mssql":
+        return (
+            f"select top 1 {sql_column} as sql_text\n"
+            f"from {table}\n"
+            "where Query_Name = @query_name\n"
+            "and Connection_Name = @connection_name\n"
+            "and App_Name = @app_name"
+        )
+    return (
+        f"select {sql_column} as sql_text\n"
+        f"from {table}\n"
+        "where Query_Name = :query_name\n"
+        "and Connection_Name = :connection_name\n"
+        "and App_Name = :app_name\n"
+        "limit 1"
+    )
 
 
 def _result_summary(result: QueryResult) -> dict[str, object]:

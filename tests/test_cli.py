@@ -573,7 +573,7 @@ def test_validate_uses_profile_rules(tmp_path: Path, capsys) -> None:
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "strict",
@@ -608,7 +608,7 @@ def test_validate_reports_application_and_team_failures(tmp_path: Path, capsys) 
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "strict",
@@ -636,7 +636,7 @@ def test_validate_allows_missing_team_metadata(tmp_path: Path, capsys) -> None:
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "strict",
@@ -664,7 +664,7 @@ def test_validate_allows_missing_comparison_keys(tmp_path: Path, capsys) -> None
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "strict",
@@ -706,7 +706,7 @@ order by participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -748,7 +748,7 @@ order by participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -799,7 +799,7 @@ where participant_id = @participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -840,7 +840,7 @@ where participant_id = @participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -881,7 +881,7 @@ where participant_id = @participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -922,7 +922,7 @@ where participant_id = @participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -963,7 +963,7 @@ where participant_id = @participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -978,6 +978,59 @@ where participant_id = @participant_id;
         "commented_out_sql",
     ]
     assert output["issues"][1]["line"] == 11
+
+
+def test_validate_groups_consecutive_commented_sql_lines(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+-- bc.clnt_is_n = <|>ClientID<|> AND
+-- bc.ssn_n = <|>SSN<|> AND
+-- bc.benf_calc_reg_n = <|>CalcRefNum<|> AND
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "check",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    commented_sql_issues = [
+        issue for issue in output["issues"] if issue["rule"] == "commented_out_sql"
+    ]
+    assert commented_sql_issues == [
+        {
+            "rule": "commented_out_sql",
+            "severity": "error",
+            "message": "Comment appears to contain disabled SQL logic.",
+            "line": 11,
+            "line_end": 13,
+        }
+    ]
 
 
 def test_validate_text_output_is_readable_with_line_numbers(
@@ -1004,7 +1057,7 @@ where participant_id = '123456789';
             [
                 "--config",
                 str(config),
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -1019,6 +1072,45 @@ where participant_id = '123456789';
     assert "- [error] select_star (line 7):" in output
     assert "- [error] hard_coded_sensitive_literals (line 9):" in output
     assert "\033[" not in output
+
+
+def test_validate_text_output_formats_line_ranges(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+-- bc.clnt_is_n = <|>ClientID<|> AND
+-- bc.ssn_n = <|>SSN<|> AND
+-- bc.benf_calc_reg_n = <|>CalcRefNum<|> AND
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "check",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr().err
+    assert "- [error] commented_out_sql (line 11-13):" in output
 
 
 def test_validate_text_output_can_be_colorized(tmp_path: Path, capsys) -> None:
@@ -1045,7 +1137,7 @@ where participant_id = '123456789';
                 str(config),
                 "--color",
                 "always",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -1084,7 +1176,7 @@ where participant_id = '123456789';
                 "--color",
                 "always",
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -1122,7 +1214,7 @@ order by participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -1162,7 +1254,7 @@ where participant_id = @participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -1200,7 +1292,7 @@ where participant_id = @participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -1237,7 +1329,7 @@ select participant_id from #participants;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -1276,7 +1368,7 @@ where participant_id = @participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "static",
@@ -1320,7 +1412,7 @@ where p.participant_id = @participant_id;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "columns",
@@ -1360,7 +1452,7 @@ from participants;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "columns",
@@ -1413,7 +1505,7 @@ from production_participants;
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "columns",
@@ -1466,7 +1558,7 @@ path = "{database_path}"
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "columns",
@@ -1501,7 +1593,7 @@ enabled_rules = ["required_metadata", "column_compare"]
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "columns",
@@ -1558,7 +1650,7 @@ column_compare_file = {str(reference)!r}
                 "--config",
                 str(config),
                 "--json",
-                "validate",
+                "check",
                 str(source),
                 "--profile",
                 "columns",
@@ -2026,6 +2118,237 @@ def test_compare_reports_different_rows_deterministically(
     assert output["comparison"]["unexpected_in_candidate"] == [
         {"name": "Ada Changed", "participant_id": 1}
     ]
+
+
+def write_stored_query_validate_config(path: Path, database_path: Path) -> Path:
+    config = path / "sqlctl.toml"
+    config.write_text(
+        f"""
+[database.connections.rpa]
+driver = "sqlite"
+path = "{database_path}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return config
+
+
+def create_stored_query_validate_database(path: Path, *, stored_sql: str) -> None:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE participants (
+                participant_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                active INTEGER NOT NULL
+            )
+            """
+        )
+        connection.executemany(
+            "INSERT INTO participants (participant_id, name, active) VALUES (?, ?, ?)",
+            [(1, "Ada", 1), (2, "Grace", 0)],
+        )
+        connection.execute(
+            """
+            CREATE TABLE rpa_sql_queries (
+                Query_Name TEXT NOT NULL,
+                Connection_Name TEXT NOT NULL,
+                App_Name TEXT NOT NULL,
+                SQL_Query TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO rpa_sql_queries
+            (Query_Name, Connection_Name, App_Name, SQL_Query)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "Participant Active Lookup",
+                "Main Warehouse",
+                "Defined Benefits",
+                stored_sql,
+            ),
+        )
+
+
+def test_validate_stored_query_matches_stored_query_by_metadata(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(comparison_fixture(), encoding="utf-8")
+    database_path = tmp_path / "rpa.sqlite3"
+    stored_sql = (
+        "select participant_id, name from participants "
+        "where active = :active order by name"
+    )
+    create_stored_query_validate_database(database_path, stored_sql=stored_sql)
+    config_path = write_stored_query_validate_config(tmp_path, database_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--json",
+                "validate",
+                str(source),
+                "--candidate-connection",
+                "rpa",
+                "--store-connection",
+                "rpa",
+                "--store-table",
+                "rpa_sql_queries",
+                "--param",
+                "active=1",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "matched"
+    assert output["store"]["table"] == "rpa_sql_queries"
+    assert output["candidate"]["row_count"] == 1
+    assert output["reference"]["row_count"] == 1
+    assert output["comparison"]["status"] == "matched"
+
+
+def test_validate_stored_query_prompts_for_missing_parameters(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(comparison_fixture(), encoding="utf-8")
+    database_path = tmp_path / "rpa.sqlite3"
+    stored_sql = "select participant_id, name from participants where active = :active"
+    create_stored_query_validate_database(database_path, stored_sql=stored_sql)
+    config_path = write_stored_query_validate_config(tmp_path, database_path)
+    monkeypatch.setattr("builtins.input", lambda prompt: "1")
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--json",
+                "validate",
+                str(source),
+                "--candidate-connection",
+                "rpa",
+                "--store-connection",
+                "rpa",
+                "--store-table",
+                "rpa_sql_queries",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "matched"
+
+
+def test_validate_stored_query_prompts_for_detected_parameter_names(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Active Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where active = :active
+and participant_id = :participant_id;
+""",
+        encoding="utf-8",
+    )
+    database_path = tmp_path / "rpa.sqlite3"
+    stored_sql = (
+        "select participant_id, name from participants "
+        "where active = :active and participant_id = :participant_id"
+    )
+    create_stored_query_validate_database(database_path, stored_sql=stored_sql)
+    config_path = write_stored_query_validate_config(tmp_path, database_path)
+    prompts = []
+    values = iter(["1", "1"])
+
+    def prompt_value(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(values)
+
+    monkeypatch.setattr("builtins.input", prompt_value)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--json",
+                "validate",
+                str(source),
+                "--candidate-connection",
+                "rpa",
+                "--store-connection",
+                "rpa",
+                "--store-table",
+                "rpa_sql_queries",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert prompts == ["active: ", "participant_id: "]
+    assert output["status"] == "matched"
+
+
+def test_validate_stored_query_runs_each_csv_parameter_row(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(comparison_fixture(), encoding="utf-8")
+    database_path = tmp_path / "rpa.sqlite3"
+    stored_sql = "select participant_id, name from participants where active = :active"
+    create_stored_query_validate_database(database_path, stored_sql=stored_sql)
+    config_path = write_stored_query_validate_config(tmp_path, database_path)
+    csv_path = tmp_path / "params.csv"
+    csv_path.write_text("active\n1\n0\n", encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--json",
+                "validate",
+                str(source),
+                "--candidate-connection",
+                "rpa",
+                "--store-connection",
+                "rpa",
+                "--store-table",
+                "rpa_sql_queries",
+                "--param-csv",
+                str(csv_path),
+                "--no-prompt",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "matched"
+    assert output["run_count"] == 2
+    assert output["runs"][0]["row"] == 2
+    assert output["runs"][0]["parameters"] == {"active": 1}
+    assert output["runs"][0]["result"]["candidate"]["row_count"] == 1
+    assert output["runs"][1]["row"] == 3
+    assert output["runs"][1]["parameters"] == {"active": 0}
+    assert output["runs"][1]["result"]["candidate"]["row_count"] == 1
 
 
 def test_compare_app_matches_all_managed_queries(tmp_path: Path, capsys) -> None:

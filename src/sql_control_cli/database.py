@@ -419,7 +419,7 @@ def probe_parameters(sql: str) -> dict[str, object]:
 def named_parameter_names(sql: str) -> tuple[str, ...]:
     names = []
     seen = set()
-    for match in re.finditer(r"(?<![@\w])@([A-Za-z_][A-Za-z0-9_]*)", sql):
+    for match in re.finditer(r"(?<![@:\w])[@:]([A-Za-z_][A-Za-z0-9_]*)", sql):
         name = match.group(1)
         lowered = name.lower()
         if lowered in seen:
