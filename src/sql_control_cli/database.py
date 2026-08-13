@@ -463,8 +463,7 @@ def probe_parameters_for_driver(sql: str, *, driver: str) -> dict[str, object]:
 def sqlctl_input_parameter_names(sql: str) -> tuple[str, ...]:
     names = []
     seen = set()
-    for match in SQLCTL_INPUT_PARAMETER_RE.finditer(sql):
-        name = match.group(1)
+    for _start, _end, name in _active_sqlctl_input_matches(sql):
         lowered = name.lower()
         if lowered in seen:
             continue
@@ -474,9 +473,37 @@ def sqlctl_input_parameter_names(sql: str) -> tuple[str, ...]:
 
 
 def sqlctl_input_placeholders_to_named_parameters(sql: str, *, driver: str) -> str:
-    return SQLCTL_INPUT_PARAMETER_RE.sub(
-        lambda match: f":{match.group(1)}", sql
-    )
+    pieces: list[str] = []
+    position = 0
+    for start, end, name in _active_sqlctl_input_matches(sql):
+        pieces.append(sql[position:start])
+        pieces.append(f":{name}")
+        position = end
+    pieces.append(sql[position:])
+    return "".join(pieces)
+
+
+def _active_sqlctl_input_matches(sql: str) -> tuple[tuple[int, int, str], ...]:
+    matches = []
+    index = 0
+    while index < len(sql):
+        char = sql[index]
+        if char == "'":
+            index = _skip_quoted_string(sql, index)
+            continue
+        if sql.startswith("--", index):
+            index = _skip_line_comment(sql, index)
+            continue
+        if sql.startswith("/*", index):
+            index = _skip_block_comment(sql, index)
+            continue
+        match = SQLCTL_INPUT_PARAMETER_RE.match(sql, index)
+        if match:
+            matches.append((match.start(), match.end(), match.group(1)))
+            index = match.end()
+            continue
+        index += 1
+    return tuple(matches)
 
 
 def named_parameter_names(sql: str) -> tuple[str, ...]:

@@ -384,6 +384,25 @@ def test_sqlctl_input_placeholders_are_distinct_from_sql_variables() -> None:
     )
 
 
+def test_sqlctl_input_placeholders_ignore_comments_and_strings() -> None:
+    sql = (
+        "-- where participant_id = <|>commented_id<|>\n"
+        "/* and plan_id = <|>commented_plan<|> */\n"
+        "select '<|>literal_id<|>' as sample_value, participant_id\n"
+        "from dbo.Participants\n"
+        "where participant_id = <|>participant_id<|>;"
+    )
+
+    assert sqlctl_input_parameter_names(sql) == ("participant_id",)
+    assert sqlctl_input_placeholders_to_named_parameters(sql, driver="mssql") == (
+        "-- where participant_id = <|>commented_id<|>\n"
+        "/* and plan_id = <|>commented_plan<|> */\n"
+        "select '<|>literal_id<|>' as sample_value, participant_id\n"
+        "from dbo.Participants\n"
+        "where participant_id = :participant_id;"
+    )
+
+
 def test_mssql_connection_string_keeps_named_instance_without_port() -> None:
     adapter = MSSQLAdapter(
         "rpa_mssql",
