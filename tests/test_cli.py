@@ -402,6 +402,51 @@ def test_column_probe_strips_only_final_top_level_order_by() -> None:
     )
 
 
+def test_column_probe_uses_final_select_from_multistatement_script() -> None:
+    sql = """
+DECLARE @p1 char(50)
+DECLARE @p2 char(50)
+
+create table #planexclude (clnt_id_n int, db_plan_n char(5))
+insert into #planexclude values (722846, '011')
+
+select participant_id, name
+from #results
+where participant_id = @participant_id
+order by participant_id;
+"""
+
+    assert column_probe_sql(sql) == (
+        "select * from (\n"
+        "select participant_id, name\n"
+        "from #results\n"
+        "where participant_id = @participant_id\n"
+        ") as sqlctl_column_probe where 1 = 0"
+    )
+
+
+def test_column_probe_keeps_cte_for_final_select_statement() -> None:
+    sql = """
+DECLARE @p1 char(50)
+
+with final_rows as (
+    select participant_id, name from participants
+)
+select participant_id, name
+from final_rows;
+"""
+
+    assert column_probe_sql(sql) == (
+        "select * from (\n"
+        "with final_rows as (\n"
+        "    select participant_id, name from participants\n"
+        ")\n"
+        "select participant_id, name\n"
+        "from final_rows\n"
+        ") as sqlctl_column_probe where 1 = 0"
+    )
+
+
 def write_validation_config(path: Path) -> Path:
     config = path / "sqlctl.toml"
     config.write_text(
@@ -709,6 +754,47 @@ from participants
 where participant_id = @participant_id;
 
 -- Both 1003 and 1013 exist
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
+
+
+def test_validate_business_rule_comment_with_condition_words_is_not_disabled_sql(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+--Fail1 bcd is les than process date (not deceased and benf_calc_c = 2) THEN ben_elig_d is no more than 6 months ago and is no more than 30 days in the future (between -6 months and + 30 days)
 """,
         encoding="utf-8",
     )
