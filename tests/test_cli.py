@@ -19,6 +19,12 @@ from sql_control_cli.database import (
 from sql_control_cli.metadata import parse_metadata, source_hash
 from sql_control_cli.validation import DEFAULT_RULES
 
+ACTIVE_RULES = tuple(
+    rule
+    for rule in DEFAULT_RULES
+    if rule not in {"allowed_team", "comparison_keys_required"}
+)
+
 
 def test_cli_version() -> None:
     assert main(["--version"]) == 0
@@ -32,11 +38,12 @@ def test_pyproject_documents_sqlctl_runtime_contract() -> None:
     assert sqlctl["validation"]["default_rules"] == ["required_metadata"]
     assert sqlctl["validation"]["warning_rules"] == ["column_compare"]
     assert "column_compare" not in sqlctl["validation"]["error_rules"]
+    assert "comparison_keys_required" not in sqlctl["validation"]["error_rules"]
     assert tuple(sqlctl["validation"]["profiles"]["default"]["enabled_rules"]) == (
-        DEFAULT_RULES
+        ACTIVE_RULES
     )
     assert tuple(sqlctl["validation"]["profiles"]["strict"]["enabled_rules"]) == (
-        DEFAULT_RULES
+        ACTIVE_RULES
     )
     assert sqlctl["validation"]["profiles"]["columns"]["enabled_rules"] == [
         "required_metadata",
@@ -350,7 +357,7 @@ def write_validation_config(path: Path) -> Path:
     config.write_text(
         """
 [validation.profiles.strict]
-enabled_rules = ["required_metadata", "allowed_team", "allowed_app", "comparison_keys_required"]
+enabled_rules = ["required_metadata", "allowed_team", "allowed_app"]
 allowed_teams = ["Benefits"]
 allowed_apps = ["Defined Benefits"]
 """.strip()
@@ -367,7 +374,6 @@ def write_static_validation_config(path: Path) -> Path:
 [validation.profiles.static]
 enabled_rules = [
   "required_metadata",
-  "comparison_keys_required",
   "missing_input_parameters",
   "unused_input_parameters",
   "commented_out_sql",
@@ -453,7 +459,6 @@ def test_validate_uses_profile_rules(tmp_path: Path, capsys) -> None:
         "required_metadata",
         "allowed_team",
         "allowed_app",
-        "comparison_keys_required",
     ]
     assert output["issues"] == []
 
@@ -491,7 +496,7 @@ def test_validate_reports_application_and_team_failures(tmp_path: Path, capsys) 
     ]
 
 
-def test_validate_force_pass_reports_forced_success(tmp_path: Path, capsys) -> None:
+def test_validate_allows_missing_team_metadata(tmp_path: Path, capsys) -> None:
     source = tmp_path / "source.sql"
     source.write_text(sql_fixture().replace("Team: Benefits\n", ""), encoding="utf-8")
     config = write_validation_config(tmp_path)
@@ -506,15 +511,42 @@ def test_validate_force_pass_reports_forced_success(tmp_path: Path, capsys) -> N
                 str(source),
                 "--profile",
                 "strict",
-                "--force-pass",
             ]
         )
         == 0
     )
 
     output = json.loads(capsys.readouterr().out)
-    assert output["status"] == "forced"
-    assert [issue["rule"] for issue in output["issues"]] == ["allowed_team"]
+    assert output["status"] == "passed"
+    assert output["issues"] == []
+
+
+def test_validate_allows_missing_comparison_keys(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        sql_fixture().replace("Comparison Keys: participant_id\n", ""),
+        encoding="utf-8",
+    )
+    config = write_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "strict",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
 
 
 def test_validate_static_rules_pass_clean_parameterized_select(
@@ -608,6 +640,47 @@ order by participant_id;
         "debug_columns",
         "nolock_usage",
     }
+    assert all("line" in issue for issue in output["issues"])
+
+
+def test_validate_text_output_is_readable_with_line_numbers(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select *
+from participants
+where participant_id = '123456789';
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr().err
+    assert "Validation failed:" in output
+    assert "Issues:" in output
+    assert "- [error] select_star (line 7):" in output
+    assert "- [error] hard_coded_sensitive_literals (line 9):" in output
 
 
 def test_validate_write_operation_allows_temp_tables(tmp_path: Path, capsys) -> None:
@@ -886,7 +959,7 @@ from participants;
     config.write_text(
         f"""
 [validation.profiles.columns]
-enabled_rules = ["required_metadata", "comparison_keys_required", "column_compare"]
+enabled_rules = ["required_metadata", "missing_input_parameters", "column_compare"]
 column_compare_file = {str(reference)!r}
 """.strip()
         + "\n",
@@ -913,7 +986,7 @@ column_compare_file = {str(reference)!r}
     assert output["status"] == "failed"
     assert {issue["severity"] for issue in output["issues"]} == {"error", "warning"}
     assert {issue["rule"] for issue in output["issues"]} == {
-        "comparison_keys_required",
+        "missing_input_parameters",
         "column_compare",
     }
 
@@ -923,7 +996,8 @@ def test_prepare_refuses_to_capture_on_validation_failure(
 ) -> None:
     source = tmp_path / "source.sql"
     source.write_text(
-        sql_fixture().replace("Comparison Keys: participant_id\n", ""), encoding="utf-8"
+        sql_fixture().replace("App_Name: Defined Benefits", "App_Name: Other App"),
+        encoding="utf-8",
     )
     config_path = write_validation_config(tmp_path)
     storage = tmp_path / "state.sqlite3"
@@ -950,6 +1024,7 @@ def test_prepare_refuses_to_capture_on_validation_failure(
 
     output = json.loads(capsys.readouterr().err)
     assert output["validation"]["status"] == "failed"
+    assert output["validation"]["issues"][0]["rule"] == "allowed_app"
     assert not managed.exists()
 
 
@@ -958,7 +1033,8 @@ def test_prepare_force_pass_captures_with_validation_context(
 ) -> None:
     source = tmp_path / "source.sql"
     source.write_text(
-        sql_fixture().replace("Comparison Keys: participant_id\n", ""), encoding="utf-8"
+        sql_fixture().replace("App_Name: Defined Benefits", "App_Name: Other App"),
+        encoding="utf-8",
     )
     config_path = write_validation_config(tmp_path)
     storage = tmp_path / "state.sqlite3"
@@ -986,6 +1062,7 @@ def test_prepare_force_pass_captures_with_validation_context(
 
     output = json.loads(capsys.readouterr().out)
     assert output["validation"]["status"] == "forced"
+    assert output["validation"]["issues"][0]["rule"] == "allowed_app"
     assert output["capture"]["action"] == "created"
     assert Path(output["capture"]["managed_path"]).exists()
 
@@ -1599,7 +1676,7 @@ def test_deploy_test_updates_changed_query(tmp_path: Path, capsys) -> None:
 def test_deploy_test_refuses_validation_failure(tmp_path: Path, capsys) -> None:
     source = tmp_path / "source.sql"
     source.write_text(
-        sql_fixture().replace("Comparison Keys: participant_id\n", ""), encoding="utf-8"
+        sql_fixture().replace("Query_Name: Participant Lookup\n", ""), encoding="utf-8"
     )
     test_db = tmp_path / "test.sqlite3"
     config_path = write_publishing_config(tmp_path, test_database=test_db)
@@ -1607,7 +1684,7 @@ def test_deploy_test_refuses_validation_failure(tmp_path: Path, capsys) -> None:
     validation_config.write_text(
         """
 [validation.profiles.strict]
-enabled_rules = ["required_metadata", "comparison_keys_required"]
+enabled_rules = ["required_metadata"]
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -1632,7 +1709,7 @@ enabled_rules = ["required_metadata", "comparison_keys_required"]
 
     output = json.loads(capsys.readouterr().err)
     assert output["validation"]["status"] == "failed"
-    assert output["validation"]["issues"][0]["rule"] == "comparison_keys_required"
+    assert output["validation"]["issues"][0]["rule"] == "required_metadata"
     assert not test_db.exists()
 
 

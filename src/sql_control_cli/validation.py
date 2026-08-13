@@ -61,9 +61,17 @@ class ValidationIssue:
     rule: str
     severity: str
     message: str
+    line: int | None = None
 
-    def to_dict(self) -> dict[str, str]:
-        return {"rule": self.rule, "severity": self.severity, "message": self.message}
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "rule": self.rule,
+            "severity": self.severity,
+            "message": self.message,
+        }
+        if self.line is not None:
+            payload["line"] = self.line
+        return payload
 
 
 @dataclass(frozen=True)
@@ -142,25 +150,27 @@ def validate_sql_file(
     if "comparison_keys_required" in enabled_rules:
         issues.extend(_validate_comparison_keys(metadata))
     if "missing_input_parameters" in enabled_rules:
-        issues.extend(_validate_missing_input_parameters(live_sql))
+        issues.extend(_validate_missing_input_parameters(sql_text, live_sql))
     if "unused_input_parameters" in enabled_rules:
-        issues.extend(_validate_unused_input_parameters(live_sql, comments))
+        issues.extend(_validate_unused_input_parameters(sql_text, live_sql, comments))
     if "commented_out_sql" in enabled_rules:
-        issues.extend(_validate_commented_out_sql(comments))
+        issues.extend(_validate_commented_out_sql(sql_text, comments))
     if "select_star" in enabled_rules:
-        issues.extend(_validate_select_star(live_sql))
+        issues.extend(_validate_select_star(sql_text, live_sql))
     if "order_by_without_justification" in enabled_rules:
-        issues.extend(_validate_order_by_without_justification(live_sql, comments))
+        issues.extend(
+            _validate_order_by_without_justification(sql_text, live_sql, comments)
+        )
     if "top_without_justification" in enabled_rules:
-        issues.extend(_validate_top_without_justification(live_sql, comments))
+        issues.extend(_validate_top_without_justification(sql_text, live_sql, comments))
     if "hard_coded_sensitive_literals" in enabled_rules:
-        issues.extend(_validate_hard_coded_sensitive_literals(live_sql))
+        issues.extend(_validate_hard_coded_sensitive_literals(sql_text, live_sql))
     if "debug_columns" in enabled_rules:
-        issues.extend(_validate_debug_columns(live_sql))
+        issues.extend(_validate_debug_columns(sql_text, live_sql))
     if "nolock_usage" in enabled_rules:
-        issues.extend(_validate_nolock_usage(live_sql))
+        issues.extend(_validate_nolock_usage(sql_text, live_sql))
     if "write_operation" in enabled_rules:
-        issues.extend(_validate_write_operation(live_sql))
+        issues.extend(_validate_write_operation(sql_text, live_sql))
     if "column_compare" in enabled_rules:
         issues.extend(_validate_column_compare(sql_text, metadata, config, profile))
 
@@ -197,7 +207,7 @@ def _validate_allowed_team(
     metadata: QueryMetadata, profile: ValidationProfile
 ) -> list[ValidationIssue]:
     if not metadata.team_name:
-        return [ValidationIssue("allowed_team", "error", "Team metadata is required.")]
+        return []
     if profile.allowed_teams and metadata.team_name not in profile.allowed_teams:
         allowed = ", ".join(profile.allowed_teams)
         return [
@@ -226,16 +236,12 @@ def _validate_allowed_app(
 
 
 def _validate_comparison_keys(metadata: QueryMetadata) -> list[ValidationIssue]:
-    if metadata.comparison_keys:
-        return []
-    return [
-        ValidationIssue(
-            "comparison_keys_required", "error", "Comparison Keys metadata is required."
-        )
-    ]
+    return []
 
 
-def _validate_missing_input_parameters(live_sql: str) -> list[ValidationIssue]:
+def _validate_missing_input_parameters(
+    sql_text: str, live_sql: str
+) -> list[ValidationIssue]:
     if _input_parameters(live_sql):
         return []
     return [
@@ -243,12 +249,13 @@ def _validate_missing_input_parameters(live_sql: str) -> list[ValidationIssue]:
             "missing_input_parameters",
             "error",
             "At least one live input parameter marker is required.",
+            line=_first_live_sql_line(sql_text),
         )
     ]
 
 
 def _validate_unused_input_parameters(
-    live_sql: str, comments: tuple[str, ...]
+    sql_text: str, live_sql: str, comments: tuple[str, ...]
 ) -> list[ValidationIssue]:
     live_parameters = _input_parameters(live_sql)
     comment_parameters = _input_parameters("\n".join(comments))
@@ -258,12 +265,15 @@ def _validate_unused_input_parameters(
             "unused_input_parameters",
             "error",
             f"Input parameter appears only in comments: {parameter}",
+            line=_line_for_pattern(sql_text, re.escape(parameter)),
         )
         for parameter in unused
     ]
 
 
-def _validate_commented_out_sql(comments: tuple[str, ...]) -> list[ValidationIssue]:
+def _validate_commented_out_sql(
+    sql_text: str, comments: tuple[str, ...]
+) -> list[ValidationIssue]:
     issues = []
     for comment in _comment_logic_lines(comments):
         normalized = _normalize_sql(comment)
@@ -276,13 +286,14 @@ def _validate_commented_out_sql(comments: tuple[str, ...]) -> list[ValidationIss
                     "commented_out_sql",
                     "error",
                     "Comment appears to contain disabled SQL logic.",
+                    line=_line_for_text(sql_text, comment),
                 )
             )
             break
     return issues
 
 
-def _validate_select_star(live_sql: str) -> list[ValidationIssue]:
+def _validate_select_star(sql_text: str, live_sql: str) -> list[ValidationIssue]:
     normalized = _normalize_sql(live_sql)
     if re.search(
         r"\bselect\s+(?:distinct\s+)?(?:top\s*\(?\s*\d+\s*\)?\s+)?\*",
@@ -293,13 +304,17 @@ def _validate_select_star(live_sql: str) -> list[ValidationIssue]:
                 "select_star",
                 "error",
                 "SELECT * is not allowed; name output columns explicitly.",
+                line=_line_for_pattern(
+                    sql_text,
+                    r"\bselect\s+(?:distinct\s+)?(?:top\s*\(?\s*\d+\s*\)?\s+)?\*",
+                ),
             )
         ]
     return []
 
 
 def _validate_order_by_without_justification(
-    live_sql: str, comments: tuple[str, ...]
+    sql_text: str, live_sql: str, comments: tuple[str, ...]
 ) -> list[ValidationIssue]:
     if not re.search(r"\border\s+by\b", _normalize_sql(live_sql)):
         return []
@@ -310,12 +325,13 @@ def _validate_order_by_without_justification(
             "order_by_without_justification",
             "error",
             "ORDER BY requires a justification comment.",
+            line=_line_for_pattern(sql_text, r"\border\s+by\b"),
         )
     ]
 
 
 def _validate_top_without_justification(
-    live_sql: str, comments: tuple[str, ...]
+    sql_text: str, live_sql: str, comments: tuple[str, ...]
 ) -> list[ValidationIssue]:
     if not re.search(r"\btop\s*\(?\s*\d+\s*\)?", _normalize_sql(live_sql)):
         return []
@@ -326,73 +342,83 @@ def _validate_top_without_justification(
             "top_without_justification",
             "error",
             "TOP requires a justification comment.",
+            line=_line_for_pattern(sql_text, r"\btop\s*\(?\s*\d+\s*\)?"),
         )
     ]
 
 
-def _validate_hard_coded_sensitive_literals(live_sql: str) -> list[ValidationIssue]:
+def _validate_hard_coded_sensitive_literals(
+    sql_text: str, live_sql: str
+) -> list[ValidationIssue]:
     normalized = _normalize_sql(live_sql)
-    if re.search(r"'?\b\d{3}-\d{2}-\d{4}\b'?", normalized) or re.search(
-        r"'?\b\d{9}\b'?", normalized
-    ):
+    ssn_pattern = r"'?\b\d{3}-\d{2}-\d{4}\b'?"
+    nine_digit_pattern = r"'?\b\d{9}\b'?"
+    if re.search(ssn_pattern, normalized) or re.search(nine_digit_pattern, normalized):
         return [
             ValidationIssue(
                 "hard_coded_sensitive_literals",
                 "error",
                 "Hard-coded sensitive literal detected.",
+                line=_line_for_pattern(sql_text, ssn_pattern)
+                or _line_for_pattern(sql_text, nine_digit_pattern),
             )
         ]
     sensitive_field_pattern = "|".join(re.escape(field) for field in SENSITIVE_FIELDS)
-    if re.search(
-        rf"\b(?:{sensitive_field_pattern})\b\s*(?:=|<>|!=|in\s*\()\s*'?[A-Za-z0-9-]+'?",
-        normalized,
-    ):
+    sensitive_literal_pattern = (
+        rf"\b(?:{sensitive_field_pattern})\b\s*(?:=|<>|!=|in\s*\()\s*"
+        r"'?[A-Za-z0-9-]+'?"
+    )
+    if re.search(sensitive_literal_pattern, normalized):
         return [
             ValidationIssue(
                 "hard_coded_sensitive_literals",
                 "error",
                 "Sensitive field is compared to a hard-coded literal.",
+                line=_line_for_pattern(sql_text, sensitive_literal_pattern),
             )
         ]
     return []
 
 
-def _validate_debug_columns(live_sql: str) -> list[ValidationIssue]:
+def _validate_debug_columns(sql_text: str, live_sql: str) -> list[ValidationIssue]:
     normalized = _normalize_sql(live_sql)
-    if re.search(
-        r"\bas\s+\[?(?:debug\w*|row_count|error\w*|test\w*|tmp\w*)\]?\b",
-        normalized,
-    ):
+    pattern = r"\bas\s+\[?(?:debug\w*|row_count|error\w*|test\w*|tmp\w*)\]?\b"
+    if re.search(pattern, normalized):
         return [
             ValidationIssue(
                 "debug_columns",
                 "error",
                 "Output alias appears temporary or diagnostic.",
+                line=_line_for_pattern(sql_text, pattern),
             )
         ]
     return []
 
 
-def _validate_nolock_usage(live_sql: str) -> list[ValidationIssue]:
-    if re.search(r"\bwith\s*\(\s*nolock\s*\)|\bnolock\b", _normalize_sql(live_sql)):
+def _validate_nolock_usage(sql_text: str, live_sql: str) -> list[ValidationIssue]:
+    pattern = r"\bwith\s*\(\s*nolock\s*\)|\bnolock\b"
+    if re.search(pattern, _normalize_sql(live_sql)):
         return [
             ValidationIssue(
                 "nolock_usage",
                 "error",
                 "NOLOCK usage is not allowed.",
+                line=_line_for_pattern(sql_text, pattern),
             )
         ]
     return []
 
 
-def _validate_write_operation(live_sql: str) -> list[ValidationIssue]:
+def _validate_write_operation(sql_text: str, live_sql: str) -> list[ValidationIssue]:
     normalized = _normalize_sql(live_sql)
-    if re.search(r"\bexec(?:ute)?\b", normalized):
+    exec_pattern = r"\bexec(?:ute)?\b"
+    if re.search(exec_pattern, normalized):
         return [
             ValidationIssue(
                 "write_operation",
                 "error",
                 "EXEC and EXECUTE operations are not allowed.",
+                line=_line_for_pattern(sql_text, exec_pattern),
             )
         ]
     patterns = (
@@ -405,12 +431,16 @@ def _validate_write_operation(live_sql: str) -> list[ValidationIssue]:
         r"\balter\s+table\s+(?!#)",
         r"\bcreate\s+table\s+(?!#)",
     )
-    if any(re.search(pattern, normalized) for pattern in patterns):
+    matched_pattern = next(
+        (pattern for pattern in patterns if re.search(pattern, normalized)), None
+    )
+    if matched_pattern:
         return [
             ValidationIssue(
                 "write_operation",
                 "error",
                 "Non-temp-table write or schema operation detected.",
+                line=_line_for_pattern(sql_text, matched_pattern),
             )
         ]
     return []
@@ -489,6 +519,40 @@ def _normalize_sql(sql_text: str) -> str:
 
 def _input_parameters(sql_text: str) -> set[str]:
     return {match.group(0).lower() for match in INPUT_PARAMETER_RE.finditer(sql_text)}
+
+
+def _line_for_pattern(sql_text: str, pattern: str) -> int | None:
+    match = re.search(pattern, sql_text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return sql_text.count("\n", 0, match.start()) + 1
+
+
+def _line_for_text(sql_text: str, text: str) -> int | None:
+    index = sql_text.lower().find(text.lower())
+    if index < 0:
+        return None
+    return sql_text.count("\n", 0, index) + 1
+
+
+def _first_live_sql_line(sql_text: str) -> int | None:
+    in_block_comment = False
+    for line_number, line in enumerate(sql_text.splitlines(), start=1):
+        stripped = line.strip()
+        if in_block_comment:
+            if "*/" in stripped:
+                in_block_comment = False
+            continue
+        if not stripped:
+            continue
+        if stripped.startswith("/*"):
+            if "*/" not in stripped:
+                in_block_comment = True
+            continue
+        if stripped.startswith("--"):
+            continue
+        return line_number
+    return None
 
 
 def _has_justification(comments: tuple[str, ...], subject: str) -> bool:
