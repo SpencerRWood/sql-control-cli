@@ -4,6 +4,9 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+mssql = ["pyodbc>=5.0.0"]
+
 [project.scripts]
 sqlctl = "sql_control_cli.cli:main"
 sql-control-cli = "sql_control_cli.cli:main"
@@ -20,3 +23,99 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.sqlctl.validation]
+default_rules = ["required_metadata"]
+implemented_rules = [
+  "required_metadata",
+  "allowed_team",
+  "allowed_app",
+  "comparison_keys_required",
+  "missing_input_parameters",
+  "unused_input_parameters",
+  "commented_out_sql",
+  "select_star",
+  "order_by_without_justification",
+  "top_without_justification",
+  "hard_coded_sensitive_literals",
+  "debug_columns",
+  "nolock_usage",
+  "write_operation",
+  "column_compare",
+]
+error_rules = [
+  "required_metadata",
+  "allowed_team",
+  "allowed_app",
+  "comparison_keys_required",
+  "missing_input_parameters",
+  "unused_input_parameters",
+  "commented_out_sql",
+  "select_star",
+  "order_by_without_justification",
+  "top_without_justification",
+  "hard_coded_sensitive_literals",
+  "debug_columns",
+  "nolock_usage",
+  "write_operation",
+]
+warning_rules = ["column_compare"]
+
+[tool.sqlctl.validation.profiles.strict]
+enabled_rules = [
+  "required_metadata",
+  "allowed_team",
+  "allowed_app",
+  "comparison_keys_required",
+  "missing_input_parameters",
+  "unused_input_parameters",
+  "commented_out_sql",
+  "select_star",
+  "order_by_without_justification",
+  "top_without_justification",
+  "hard_coded_sensitive_literals",
+  "debug_columns",
+  "nolock_usage",
+  "write_operation",
+  "column_compare",
+]
+
+[tool.sqlctl.validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+
+[tool.sqlctl.database.connection_fields.sqlite]
+required = ["driver", "path"]
+optional = []
+
+[tool.sqlctl.database.connection_fields.mssql]
+required = [
+  "driver",
+  "sql_driver",
+  "server_env",
+  "database_env",
+  "username_env",
+  "password_env",
+]
+optional = [
+  "port",
+  "port_env",
+  "trust_server_certificate",
+  "trust_server_certificate_env",
+  "sql_driver_env",
+  "server",
+  "database",
+  "username",
+  "password",
+]
+secret_fields = ["username", "password"]
+secret_env_fields = ["username_env", "password_env"]
+
+[tool.sqlctl.database.connection_templates.rpa_mssql]
+driver = "mssql"
+sql_driver = "ODBC Driver 17 for SQL Server"
+server_env = "SQLCTL_RPA_MSSQL_SERVER"
+port = 1433
+database_env = "SQLCTL_RPA_MSSQL_DATABASE"
+username_env = "SQLCTL_RPA_MSSQL_USERNAME"
+password_env = "SQLCTL_RPA_MSSQL_PASSWORD"
+trust_server_certificate = true

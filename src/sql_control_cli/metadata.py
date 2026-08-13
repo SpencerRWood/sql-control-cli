@@ -60,7 +60,10 @@ def parse_metadata(sql_text: str) -> QueryMetadata:
     fields: dict[str, str] = {}
     duplicates: list[str] = []
     for raw_line in _leading_comment_lines(sql_text):
-        match = re.match(r"^\s*(?:--\s*)?([A-Za-z_][A-Za-z_ ]*):\s*(.*?)\s*$", raw_line)
+        match = re.match(
+            r"^\s*(?:(?:--|\*)\s*)?([A-Za-z_][A-Za-z_ ]*):\s*(.*?)\s*$",
+            raw_line,
+        )
         if not match:
             continue
         key = _canonical_key(match.group(1))
