@@ -17,6 +17,7 @@ from sql_control_cli.database import (
     inspect_connection,
     mssql_named_parameters,
     probe_parameters,
+    probe_parameters_for_driver,
     sqlctl_input_parameter_names,
     sqlctl_input_placeholders_to_named_parameters,
     strip_top_level_order_by,
@@ -461,6 +462,25 @@ order by participant_id;
         "where error_reason = @failure\n"
         ") as sqlctl_column_probe where 1 = 0"
     )
+
+
+def test_mssql_column_probe_parameters_ignore_native_tsql_variables() -> None:
+    sql = """
+declare @failure char(50)
+set @failure = 'ok'
+
+select participant_id, error_reason
+from #results
+where error_reason = @failure
+and participant_id = <|>participant_id<|>;
+"""
+
+    final_select = final_query_select_statement(sql)
+    assert final_select is not None
+    assert probe_parameters(final_select) == {"failure": None}
+    assert probe_parameters_for_driver(final_select, driver="mssql") == {
+        "participant_id": None,
+    }
 
 
 def test_column_probe_strips_only_final_top_level_order_by() -> None:

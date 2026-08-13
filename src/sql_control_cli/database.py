@@ -302,7 +302,7 @@ def query_columns(
         config,
         connection_name=connection_name,
         sql=column_probe_sql(sql if driver == "mssql" else query_sql),
-        parameters=probe_parameters(query_sql),
+        parameters=probe_parameters_for_driver(query_sql, driver=driver),
         source_name=source_name,
     ).columns
 
@@ -452,6 +452,12 @@ def strip_top_level_order_by(sql: str) -> str:
 
 def probe_parameters(sql: str) -> dict[str, object]:
     return {name: None for name in named_parameter_names(sql)}
+
+
+def probe_parameters_for_driver(sql: str, *, driver: str) -> dict[str, object]:
+    if driver == "mssql":
+        return {name: None for name in sqlctl_input_parameter_names(sql)}
+    return probe_parameters(sql)
 
 
 def sqlctl_input_parameter_names(sql: str) -> tuple[str, ...]:
