@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 from .config import DatabaseConnectionConfig, SqlctlConfig
 
+SQLCTL_INPUT_PARAMETER_RE = re.compile(r"<\|>\s*([A-Za-z_][A-Za-z0-9_]*)\s*<\|>")
+
 
 class DatabaseError(ValueError):
     pass
@@ -218,7 +220,13 @@ def execute_query(
     parameters: dict[str, object] | None = None,
     source_name: str | None = None,
 ) -> QueryResult:
-    result = adapter_for(config, connection_name).execute(sql, parameters or {})
+    connection = get_connection_config(config, connection_name)
+    executable_sql = sqlctl_input_placeholders_to_named_parameters(
+        sql, driver=connection.driver
+    )
+    result = adapter_for(config, connection_name).execute(
+        executable_sql, parameters or {}
+    )
     if source_name is None:
         return result
     return QueryResult(
@@ -416,6 +424,25 @@ def probe_parameters(sql: str) -> dict[str, object]:
     return {name: None for name in named_parameter_names(sql)}
 
 
+def sqlctl_input_parameter_names(sql: str) -> tuple[str, ...]:
+    names = []
+    seen = set()
+    for match in SQLCTL_INPUT_PARAMETER_RE.finditer(sql):
+        name = match.group(1)
+        lowered = name.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        names.append(name)
+    return tuple(names)
+
+
+def sqlctl_input_placeholders_to_named_parameters(sql: str, *, driver: str) -> str:
+    return SQLCTL_INPUT_PARAMETER_RE.sub(
+        lambda match: f":{match.group(1)}", sql
+    )
+
+
 def named_parameter_names(sql: str) -> tuple[str, ...]:
     names = []
     seen = set()
@@ -432,7 +459,9 @@ def named_parameter_names(sql: str) -> tuple[str, ...]:
 def mssql_named_parameters(
     sql: str, parameters: dict[str, object]
 ) -> tuple[str, tuple[object, ...]]:
-    normalized_parameters = {key.lower().lstrip("@"): value for key, value in parameters.items()}
+    normalized_parameters = {
+        key.lower().lstrip("@:"): value for key, value in parameters.items()
+    }
     positional_parameters: list[object] = []
 
     def replace(match: re.Match[str]) -> str:
@@ -441,7 +470,7 @@ def mssql_named_parameters(
         return "?"
 
     return (
-        re.sub(r"(?<![@\w])@([A-Za-z_][A-Za-z0-9_]*)", replace, sql),
+        re.sub(r"(?<![:\w]):([A-Za-z_][A-Za-z0-9_]*)", replace, sql),
         tuple(positional_parameters),
     )
 

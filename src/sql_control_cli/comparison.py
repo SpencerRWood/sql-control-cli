@@ -10,7 +10,7 @@ from .database import (
     QueryResult,
     execute_query,
     get_connection_config,
-    named_parameter_names,
+    sqlctl_input_parameter_names,
 )
 from .metadata import identity_key, parse_metadata, sql_body
 from .storage import Repository
@@ -231,7 +231,7 @@ def rpa_compare_parameter_names(
 ) -> tuple[str, ...]:
     validation = validate_sql_file(sql_file, config, profile_name=profile_name)
     if not validation.passed:
-        return named_parameter_names(sql_file.read_text(encoding="utf-8"))
+        return sqlctl_input_parameter_names(sql_file.read_text(encoding="utf-8"))
     sql_text = sql_file.read_text(encoding="utf-8")
     metadata = parse_metadata(sql_text)
     reference_sql = _stored_rpa_query_sql(
@@ -243,9 +243,9 @@ def rpa_compare_parameter_names(
         connection_name_value=metadata.connection_name,
         app_name=metadata.app_name,
     )
-    names = list(named_parameter_names(sql_text))
+    names = list(sqlctl_input_parameter_names(sql_text))
     if reference_sql is not None:
-        for name in named_parameter_names(reference_sql):
+        for name in sqlctl_input_parameter_names(reference_sql):
             if name.lower() not in {existing.lower() for existing in names}:
                 names.append(name)
     return tuple(names)
@@ -326,9 +326,9 @@ def _stored_query_lookup_sql(
         return (
             f"select top 1 {sql_column} as sql_text\n"
             f"from {table}\n"
-            "where Query_Name = @query_name\n"
-            "and Connection_Name = @connection_name\n"
-            "and App_Name = @app_name"
+            "where Query_Name = :query_name\n"
+            "and Connection_Name = :connection_name\n"
+            "and App_Name = :app_name"
         )
     return (
         f"select {sql_column} as sql_text\n"
