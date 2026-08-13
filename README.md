@@ -99,8 +99,8 @@ Implemented validation rules:
 - `allowed_team`: when `Team` is present and `allowed_teams` is configured, limits it to allowed values.
 - `allowed_app`: optionally limits `App_Name` to `allowed_apps`.
 - `comparison_keys_required`: implemented for opt-in legacy profiles, but active default profiles do not require `Comparison Keys`.
-- `missing_input_parameters`: requires at least one live `@parameter` marker.
-- `unused_input_parameters`: flags `@parameter` markers that appear only in comments.
+- `missing_input_parameters`: warns when no live SQLCTL input marker like `<|>ClientID<|>` is present.
+- `unused_input_parameters`: flags SQLCTL input markers that appear only in comments.
 - `commented_out_sql`: flags comments that look like disabled SQL logic.
 - `select_star`: flags `SELECT *`, including `SELECT TOP ... *` and `SELECT DISTINCT *`.
 - `order_by_without_justification`: requires a reason comment for `ORDER BY`.
@@ -197,12 +197,14 @@ connection = "rpa_mssql"
 sql = """
 select participant_id, name
 from dbo.Participants
-where participant_id = @participant_id
+where participant_id = <|>participant_id<|>
 """
 ```
 
-SQL Server repository sources may use `@parameter` markers. `sqlctl` translates them to ODBC
-positional parameters for `pyodbc`.
+Use `<|>name<|>` for parameters that `sqlctl validate` should prompt for or map from `--param`
+and `--param-csv`. Normal SQL variables such as `@population` are not interactive input markers.
+SQL Server repository sources may still use native `@parameter` markers; `sqlctl` translates them
+to ODBC positional parameters for `pyodbc`.
 
 The project-level `pyproject.toml` includes a `[tool.sqlctl]` section that supplies default
 `strict` and `columns` validation profiles, the active `rpa_mssql` connection template, and the

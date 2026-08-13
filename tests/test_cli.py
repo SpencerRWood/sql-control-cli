@@ -17,6 +17,8 @@ from sql_control_cli.database import (
     inspect_connection,
     mssql_named_parameters,
     probe_parameters,
+    sqlctl_input_parameter_names,
+    sqlctl_input_placeholders_to_named_parameters,
     strip_top_level_order_by,
 )
 from sql_control_cli.metadata import parse_metadata, source_hash
@@ -39,7 +41,10 @@ def test_pyproject_documents_sqlctl_runtime_contract() -> None:
 
     assert tuple(sqlctl["validation"]["implemented_rules"]) == DEFAULT_RULES
     assert sqlctl["validation"]["default_rules"] == ["required_metadata"]
-    assert sqlctl["validation"]["warning_rules"] == ["column_compare"]
+    assert sqlctl["validation"]["warning_rules"] == [
+        "missing_input_parameters",
+        "column_compare",
+    ]
     assert "column_compare" not in sqlctl["validation"]["error_rules"]
     assert "comparison_keys_required" not in sqlctl["validation"]["error_rules"]
     assert tuple(sqlctl["validation"]["profiles"]["default"]["enabled_rules"]) == (
@@ -88,7 +93,7 @@ Comparison Keys: participant_id
 
 select participant_id, name
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 """
 
 
@@ -334,6 +339,31 @@ def test_mssql_named_parameters_translate_for_pyodbc() -> None:
         "and plan_id = ? or fallback_id = ?"
     )
     assert parameters == (123, "011", 123)
+
+
+def test_sqlctl_input_placeholders_are_distinct_from_sql_variables() -> None:
+    sql = (
+        "declare @population int = 1;\n"
+        "select * from dbo.Participants where active = <|>active<|> "
+        "and participant_id = <|>participant_id<|> "
+        "and retry_active = <|>active<|>;"
+    )
+
+    assert sqlctl_input_parameter_names(sql) == ("active", "participant_id")
+    assert (
+        sqlctl_input_placeholders_to_named_parameters(sql, driver="mssql")
+        == "declare @population int = 1;\n"
+        "select * from dbo.Participants where active = @active "
+        "and participant_id = @participant_id "
+        "and retry_active = @active;"
+    )
+    assert (
+        sqlctl_input_placeholders_to_named_parameters(sql, driver="sqlite")
+        == "declare @population int = 1;\n"
+        "select * from dbo.Participants where active = :active "
+        "and participant_id = :participant_id "
+        "and retry_active = :active;"
+    )
 
 
 def test_mssql_connection_string_keeps_named_instance_without_port() -> None:
@@ -693,7 +723,7 @@ def test_validate_static_rules_pass_clean_parameterized_select(
 
 select participant_id, name
 from participants
-where participant_id = @participant_id
+where participant_id = <|>participant_id<|>
 order by participant_id;
 """,
         encoding="utf-8",
@@ -729,7 +759,7 @@ Query_Name: Participant Lookup
 Connection_Name: Main Warehouse
 App_Name: Defined Benefits
 Comparison Keys: participant_id
--- where participant_id = @commented_parameter
+-- where participant_id = <|>commented_parameter<|>
 -- select disabled_column from old_table
 */
 
@@ -772,6 +802,62 @@ order by participant_id;
     assert all("line" in issue for issue in output["issues"])
 
 
+def test_check_warns_when_no_live_sqlctl_input_placeholder(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+-- where participant_id = <|>participant_id<|>
+select participant_id, name
+from participants
+where active = @active;
+""",
+        encoding="utf-8",
+    )
+    config = tmp_path / "sqlctl.toml"
+    config.write_text(
+        """
+[validation.profiles.static]
+enabled_rules = ["required_metadata", "missing_input_parameters"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "check",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is True
+    assert output["status"] == "warning"
+    assert output["issues"] == [
+        {
+            "rule": "missing_input_parameters",
+            "severity": "warning",
+            "message": "No live SQLCTL input parameter marker was found.",
+            "line": 8,
+        }
+    ]
+
+
 def test_validate_comment_with_plain_english_and_is_not_disabled_sql(
     tmp_path: Path, capsys
 ) -> None:
@@ -785,7 +871,7 @@ App_Name: Defined Benefits
 
 select participant_id, name
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 
 -- Both 1003 and 1013 exist
 """,
@@ -826,7 +912,7 @@ App_Name: Defined Benefits
 
 select participant_id, name
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 
 --Fail1 bcd is les than process date (not deceased and benf_calc_c = 2) THEN ben_elig_d is no more than 6 months ago and is no more than 30 days in the future (between -6 months and + 30 days)
 """,
@@ -867,7 +953,7 @@ App_Name: Defined Benefits
 
 select participant_id, name
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 
 --Fail2 Select ATT Plans/Executive (must wait 6 months after term to receive a payment)
 """,
@@ -908,7 +994,7 @@ App_Name: Defined Benefits
 
 select participant_id, name
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 
 --bcd <= 60 days from process date then ben_elig_d must be between 30 and 60 days from process date
 """,
@@ -949,9 +1035,9 @@ App_Name: Defined Benefits
 
 select participant_id, name
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 
--- and plan_id = @plan_id
+-- and plan_id = <|>plan_id<|>
 """,
         encoding="utf-8",
     )
@@ -993,7 +1079,7 @@ App_Name: Defined Benefits
 
 select participant_id, name
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 
 -- bc.clnt_is_n = <|>ClientID<|> AND
 -- bc.ssn_n = <|>SSN<|> AND
@@ -1085,7 +1171,7 @@ App_Name: Defined Benefits
 
 select participant_id, name
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 
 -- bc.clnt_is_n = <|>ClientID<|> AND
 -- bc.ssn_n = <|>SSN<|> AND
@@ -1242,7 +1328,7 @@ App_Name: Defined Benefits
 select
     case when participant_id is null then 'missing' end as Error_Reason
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 """,
         encoding="utf-8",
     )
@@ -1280,7 +1366,7 @@ App_Name: Defined Benefits
 
 select participant_id as debug_participant_id
 from participants
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 """,
         encoding="utf-8",
     )
@@ -1316,7 +1402,7 @@ Comparison Keys: participant_id
 */
 
 create table #participants (participant_id int);
-insert into #participants values (@participant_id);
+insert into #participants values (<|>participant_id<|>);
 select participant_id from #participants;
 """,
         encoding="utf-8",
@@ -1356,7 +1442,7 @@ Comparison Keys: participant_id
 
 update participants
 set name = 'Test'
-where participant_id = @participant_id;
+where participant_id = <|>participant_id<|>;
 """,
         encoding="utf-8",
     )
@@ -1656,13 +1742,13 @@ column_compare_file = {str(reference)!r}
                 "columns",
             ]
         )
-        == 2
+        == 0
     )
 
-    output = json.loads(capsys.readouterr().err)
-    assert output["ok"] is False
-    assert output["status"] == "failed"
-    assert {issue["severity"] for issue in output["issues"]} == {"error", "warning"}
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is True
+    assert output["status"] == "warning"
+    assert {issue["severity"] for issue in output["issues"]} == {"warning"}
     assert {issue["rule"] for issue in output["issues"]} == {
         "missing_input_parameters",
         "column_compare",
@@ -1906,7 +1992,7 @@ Comparison Keys: participant_id
 
 select participant_id, name
 from participants
-where active = :active
+where active = <|>active<|>
 {order_by_comment}\
 {order_by};
 """
@@ -2241,6 +2327,8 @@ def test_validate_stored_query_prompts_for_missing_parameters(
                 "rpa",
                 "--store-table",
                 "rpa_sql_queries",
+                "--param",
+                "population=1",
             ]
         )
         == 0
@@ -2263,15 +2351,16 @@ App_Name: Defined Benefits
 
 select participant_id, name
 from participants
-where active = :active
-and participant_id = :participant_id;
+where active = <|>active<|>
+and participant_id = <|>participant_id<|>
+and @population = @population;
 """,
         encoding="utf-8",
     )
     database_path = tmp_path / "rpa.sqlite3"
     stored_sql = (
         "select participant_id, name from participants "
-        "where active = :active and participant_id = :participant_id"
+        "where active = <|>active<|> and participant_id = <|>participant_id<|>"
     )
     create_stored_query_validate_database(database_path, stored_sql=stored_sql)
     config_path = write_stored_query_validate_config(tmp_path, database_path)
@@ -2298,6 +2387,8 @@ and participant_id = :participant_id;
                 "rpa",
                 "--store-table",
                 "rpa_sql_queries",
+                "--param",
+                "population=1",
             ]
         )
         == 0

@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 from .config import DatabaseConnectionConfig, SqlctlConfig
 
+SQLCTL_INPUT_PARAMETER_RE = re.compile(r"<\|>\s*([A-Za-z_][A-Za-z0-9_]*)\s*<\|>")
+
 
 class DatabaseError(ValueError):
     pass
@@ -218,7 +220,13 @@ def execute_query(
     parameters: dict[str, object] | None = None,
     source_name: str | None = None,
 ) -> QueryResult:
-    result = adapter_for(config, connection_name).execute(sql, parameters or {})
+    connection = get_connection_config(config, connection_name)
+    executable_sql = sqlctl_input_placeholders_to_named_parameters(
+        sql, driver=connection.driver
+    )
+    result = adapter_for(config, connection_name).execute(
+        executable_sql, parameters or {}
+    )
     if source_name is None:
         return result
     return QueryResult(
@@ -414,6 +422,26 @@ def strip_top_level_order_by(sql: str) -> str:
 
 def probe_parameters(sql: str) -> dict[str, object]:
     return {name: None for name in named_parameter_names(sql)}
+
+
+def sqlctl_input_parameter_names(sql: str) -> tuple[str, ...]:
+    names = []
+    seen = set()
+    for match in SQLCTL_INPUT_PARAMETER_RE.finditer(sql):
+        name = match.group(1)
+        lowered = name.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        names.append(name)
+    return tuple(names)
+
+
+def sqlctl_input_placeholders_to_named_parameters(sql: str, *, driver: str) -> str:
+    prefix = "@" if driver == "mssql" else ":"
+    return SQLCTL_INPUT_PARAMETER_RE.sub(
+        lambda match: f"{prefix}{match.group(1)}", sql
+    )
 
 
 def named_parameter_names(sql: str) -> tuple[str, ...]:

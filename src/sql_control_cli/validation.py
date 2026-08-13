@@ -10,6 +10,7 @@ from .database import (
     final_query_select_statement,
     query_columns,
     query_source_columns,
+    sqlctl_input_parameter_names,
 )
 from .metadata import (
     MetadataError,
@@ -37,7 +38,7 @@ DEFAULT_RULES = (
 )
 KNOWN_RULES = set(DEFAULT_RULES)
 
-INPUT_PARAMETER_RE = re.compile(r"(?<![@:\w])[@:][A-Za-z_][A-Za-z0-9_]*")
+INPUT_PARAMETER_RE = re.compile(r"<\|>\s*[A-Za-z_][A-Za-z0-9_]*\s*<\|>")
 REASON_WORDS = (
     "intentional",
     "required",
@@ -255,8 +256,8 @@ def _validate_missing_input_parameters(
     return [
         ValidationIssue(
             "missing_input_parameters",
-            "error",
-            "At least one live input parameter marker is required.",
+            "warning",
+            "No live SQLCTL input parameter marker was found.",
             line=_first_live_sql_line(sql_text),
         )
     ]
@@ -581,7 +582,10 @@ def _normalize_sql(sql_text: str) -> str:
 
 
 def _input_parameters(sql_text: str) -> set[str]:
-    return {match.group(0).lower() for match in INPUT_PARAMETER_RE.finditer(sql_text)}
+    return {
+        name.lower()
+        for name in sqlctl_input_parameter_names(sql_text)
+    }
 
 
 def _line_for_pattern(sql_text: str, pattern: str) -> int | None:
