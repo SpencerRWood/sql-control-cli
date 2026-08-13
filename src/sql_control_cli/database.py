@@ -282,22 +282,24 @@ def query_columns(
     sql: str,
     source_name: str | None = None,
 ) -> tuple[str, ...]:
+    query_sql = final_query_select_statement(sql)
+    if query_sql is None:
+        raise DatabaseError("Could not resolve final query SELECT statement.")
     return execute_query(
         config,
         connection_name=connection_name,
-        sql=column_probe_sql(sql),
-        parameters=probe_parameters(sql),
+        sql=column_probe_sql(query_sql),
+        parameters=probe_parameters(query_sql),
         source_name=source_name,
     ).columns
 
 
 def column_probe_sql(sql: str) -> str:
-    probe_source = _final_top_level_select_statement(sql) or sql
-    probe_source = strip_top_level_order_by(probe_source.rstrip().rstrip(";"))
+    probe_source = strip_top_level_order_by(sql.rstrip().rstrip(";"))
     return f"select * from (\n{probe_source}\n) as sqlctl_column_probe where 1 = 0"
 
 
-def _final_top_level_select_statement(sql: str) -> str | None:
+def final_query_select_statement(sql: str) -> str | None:
     lowered = sql.lower()
     depth = 0
     index = 0

@@ -13,6 +13,7 @@ from sql_control_cli.database import (
     MSSQLAdapter,
     column_probe_sql,
     execute_query,
+    final_query_select_statement,
     inspect_connection,
     mssql_named_parameters,
     probe_parameters,
@@ -402,7 +403,7 @@ def test_column_probe_strips_only_final_top_level_order_by() -> None:
     )
 
 
-def test_column_probe_uses_final_select_from_multistatement_script() -> None:
+def test_final_query_select_statement_uses_last_select_from_multistatement_script() -> None:
     sql = """
 DECLARE @p1 char(50)
 DECLARE @p2 char(50)
@@ -416,16 +417,15 @@ where participant_id = @participant_id
 order by participant_id;
 """
 
-    assert column_probe_sql(sql) == (
-        "select * from (\n"
+    assert final_query_select_statement(sql) == (
         "select participant_id, name\n"
         "from #results\n"
         "where participant_id = @participant_id\n"
-        ") as sqlctl_column_probe where 1 = 0"
+        "order by participant_id"
     )
 
 
-def test_column_probe_keeps_cte_for_final_select_statement() -> None:
+def test_final_query_select_statement_keeps_cte_for_last_select() -> None:
     sql = """
 DECLARE @p1 char(50)
 
@@ -436,18 +436,16 @@ select participant_id, name
 from final_rows;
 """
 
-    assert column_probe_sql(sql) == (
-        "select * from (\n"
+    assert final_query_select_statement(sql) == (
         "with final_rows as (\n"
         "    select participant_id, name from participants\n"
         ")\n"
         "select participant_id, name\n"
-        "from final_rows\n"
-        ") as sqlctl_column_probe where 1 = 0"
+        "from final_rows"
     )
 
 
-def test_column_probe_stops_before_cleanup_statement_without_semicolon() -> None:
+def test_final_query_select_statement_stops_before_cleanup_without_semicolon() -> None:
     sql = """
 DECLARE @p1 char(50)
 
@@ -457,12 +455,29 @@ where participant_id = @participant_id
 drop table #results
 """
 
-    assert column_probe_sql(sql) == (
-        "select * from (\n"
+    assert final_query_select_statement(sql) == (
         "select participant_id, name\n"
         "from #results\n"
-        "where participant_id = @participant_id\n"
-        ") as sqlctl_column_probe where 1 = 0"
+        "where participant_id = @participant_id"
+    )
+
+
+def test_final_query_select_statement_ignores_intermediate_selects() -> None:
+    sql = """
+select setup_id
+from #setup;
+
+insert into #results
+select participant_id, name
+from participants;
+
+select participant_id, name, status
+from #results;
+"""
+
+    assert final_query_select_statement(sql) == (
+        "select participant_id, name, status\n"
+        "from #results"
     )
 
 
@@ -855,6 +870,47 @@ from participants
 where participant_id = @participant_id;
 
 --Fail2 Select ATT Plans/Executive (must wait 6 months after term to receive a payment)
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
+
+
+def test_validate_business_rule_comment_with_duration_comparison_is_not_disabled_sql(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+--bcd <= 60 days from process date then ben_elig_d must be between 30 and 60 days from process date
 """,
         encoding="utf-8",
     )

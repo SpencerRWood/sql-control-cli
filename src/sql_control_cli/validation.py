@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import SqlctlConfig, ValidationProfile
-from .database import DatabaseError, query_columns, query_source_columns
+from .database import (
+    DatabaseError,
+    final_query_select_statement,
+    query_columns,
+    query_source_columns,
+)
 from .metadata import (
     MetadataError,
     QueryMetadata,
@@ -302,12 +307,18 @@ def _looks_like_disabled_sql_comment(normalized_comment: str) -> bool:
         normalized_comment,
     ):
         return True
+    if re.search(
+        r"\b(?:must|then|days?|months?|years?)\b",
+        normalized_comment,
+    ):
+        return False
     return bool(
         re.search(
             r"^\s*(?:and|or\s+)?\(?\s*"
-            r"(?:@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*)\s*"
-            r"(?:=|<>|!=|<=|>=|<|>|like\b|in\b|between\b|"
-            r"is\s+null\b|is\s+not\s+null\b)",
+            r"(?:@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*)"
+            r"(?:\s*(?:=|<>|!=|<=|>=|<|>|like\b)\s*"
+            r"(?:@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*\b|'[^']*'|\d+\b|\w+\s*\()|"
+            r"\s+(?:in\b|between\b|is\s+null\b|is\s+not\s+null\b))",
             normalized_comment,
         )
     )
@@ -665,11 +676,14 @@ def _candidate_reference_source_names(metadata: QueryMetadata) -> tuple[str, ...
 
 def _final_select_columns(sql_text: str) -> tuple[str, ...] | None:
     live_sql, _comments = _split_sql_sections(sql_text)
-    select_bounds = _final_top_level_select_bounds(live_sql)
+    final_select = final_query_select_statement(live_sql)
+    if final_select is None:
+        return None
+    select_bounds = _final_top_level_select_bounds(final_select)
     if select_bounds is None:
         return None
     start, end = select_bounds
-    select_list = live_sql[start:end].strip()
+    select_list = final_select[start:end].strip()
     select_list = re.sub(
         r"^(?:distinct\s+)?(?:top\s*\(?\s*\d+\s*\)?\s+)?",
         "",
