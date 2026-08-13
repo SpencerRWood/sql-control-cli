@@ -39,12 +39,24 @@ project repository automatically, so repo-level settings such as `SQLCTL_CONFIG`
 `SQLCTL_STORAGE_PATH`, and `SQLCTL_MANAGED_ROOT` can travel with the editable install. Environment
 variables set in the terminal still take precedence over values in `.env`.
 
-## Validation And Prepare
+## Check, Validate, And Prepare
 
-Validate a SQL file before capture:
+Check a SQL file against metadata and workflow rules:
 
 ```bash
-sqlctl validate path/to/query.sql --json
+sqlctl check path/to/query.sql --profile strict --json
+```
+
+Validate query results against the stored RPA query resolved from metadata:
+
+```bash
+sqlctl validate path/to/query.sql --param active=1 --json
+```
+
+Run validation once for each CSV parameter row:
+
+```bash
+sqlctl validate path/to/query.sql --param-csv params.csv --json
 ```
 
 Create a managed copy only after validation passes:

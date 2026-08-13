@@ -67,6 +67,7 @@ class ValidationIssue:
     severity: str
     message: str
     line: int | None = None
+    line_end: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -76,6 +77,8 @@ class ValidationIssue:
         }
         if self.line is not None:
             payload["line"] = self.line
+        if self.line_end is not None and self.line_end != self.line:
+            payload["line_end"] = self.line_end
         return payload
 
 
@@ -280,19 +283,32 @@ def _validate_commented_out_sql(
     sql_text: str, comments: tuple[str, ...]
 ) -> list[ValidationIssue]:
     issues = []
-    for comment in _comment_logic_lines(comments):
+    active_group: list[tuple[int, str]] = []
+    for line_number, comment in _comment_logic_lines(sql_text, comments):
         normalized = _normalize_sql(comment)
         if _looks_like_disabled_sql_comment(normalized):
-            issues.append(
-                ValidationIssue(
-                    "commented_out_sql",
-                    "error",
-                    "Comment appears to contain disabled SQL logic.",
-                    line=_line_for_text(sql_text, comment),
-                )
-            )
-            break
+            if active_group and line_number != active_group[-1][0] + 1:
+                issues.append(_commented_out_sql_issue(active_group))
+                active_group = []
+            active_group.append((line_number, comment))
+        elif active_group:
+            issues.append(_commented_out_sql_issue(active_group))
+            active_group = []
+    if active_group:
+        issues.append(_commented_out_sql_issue(active_group))
     return issues
+
+
+def _commented_out_sql_issue(group: list[tuple[int, str]]) -> ValidationIssue:
+    line_start = group[0][0]
+    line_end = group[-1][0]
+    return ValidationIssue(
+        "commented_out_sql",
+        "error",
+        "Comment appears to contain disabled SQL logic.",
+        line=line_start,
+        line_end=line_end,
+    )
 
 
 def _looks_like_disabled_sql_comment(normalized_comment: str) -> bool:
@@ -317,7 +333,8 @@ def _looks_like_disabled_sql_comment(normalized_comment: str) -> bool:
             r"^\s*(?:and|or\s+)?\(?\s*"
             r"(?:@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*)"
             r"(?:\s*(?:=|<>|!=|<=|>=|<|>|like\b)\s*"
-            r"(?:@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*\b|'[^']*'|\d+\b|\w+\s*\()|"
+            r"(?:<\|>[^<]+<\|>|@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*\b|"
+            r"'[^']*'|\d+\b|\w+\s*\()|"
             r"\s+(?:in\b|between\b|is\s+null\b|is\s+not\s+null\b))",
             normalized_comment,
         )
@@ -609,16 +626,25 @@ def _has_justification(comments: tuple[str, ...], subject: str) -> bool:
     return False
 
 
-def _comment_logic_lines(comments: tuple[str, ...]) -> tuple[str, ...]:
-    lines = []
+def _comment_logic_lines(
+    sql_text: str, comments: tuple[str, ...]
+) -> tuple[tuple[int, str], ...]:
+    lines: list[tuple[int, str]] = []
+    search_start = 0
     for comment in comments:
-        for line in comment.splitlines():
+        comment_start = sql_text.find(comment, search_start)
+        if comment_start < 0:
+            comment_start = sql_text.find(comment)
+        base_line = sql_text.count("\n", 0, comment_start) + 1 if comment_start >= 0 else 1
+        if comment_start >= 0:
+            search_start = comment_start + len(comment)
+        for offset, line in enumerate(comment.splitlines()):
             cleaned = re.sub(r"^\s*(?:/\*+|\*/|--|\*)\s*", "", line).strip()
             if not cleaned:
                 continue
             if re.match(r"^[A-Za-z_][A-Za-z_ ]*:\s*", cleaned):
                 continue
-            lines.append(cleaned)
+            lines.append((base_line + offset, cleaned))
     return tuple(lines)
 
 
