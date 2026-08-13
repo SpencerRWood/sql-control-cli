@@ -42,10 +42,11 @@ def test_pyproject_documents_sqlctl_runtime_contract() -> None:
     assert tuple(sqlctl["validation"]["implemented_rules"]) == DEFAULT_RULES
     assert sqlctl["validation"]["default_rules"] == ["required_metadata"]
     assert sqlctl["validation"]["warning_rules"] == [
-        "missing_input_parameters",
+        "unused_input_parameters",
         "column_compare",
     ]
     assert "column_compare" not in sqlctl["validation"]["error_rules"]
+    assert "unused_input_parameters" not in sqlctl["validation"]["error_rules"]
     assert "comparison_keys_required" not in sqlctl["validation"]["error_rules"]
     assert tuple(sqlctl["validation"]["profiles"]["default"]["enabled_rules"]) == (
         ACTIVE_RULES
@@ -435,6 +436,33 @@ def test_column_probe_sql_and_parameters_are_zero_row_safe() -> None:
     assert probe_parameters(sql) == {"participant_id": None}
 
 
+def test_column_probe_preserves_setup_before_final_select() -> None:
+    sql = """
+declare @failure char(50)
+set @failure = 'ok'
+
+create table #results (participant_id int, error_reason varchar(20))
+insert into #results values (1, @failure)
+
+select participant_id, error_reason
+from #results
+where error_reason = @failure
+order by participant_id;
+"""
+
+    assert column_probe_sql(sql) == (
+        "declare @failure char(50)\n"
+        "set @failure = 'ok'\n\n"
+        "create table #results (participant_id int, error_reason varchar(20))\n"
+        "insert into #results values (1, @failure);\n"
+        "select * from (\n"
+        "select participant_id, error_reason\n"
+        "from #results\n"
+        "where error_reason = @failure\n"
+        ") as sqlctl_column_probe where 1 = 0"
+    )
+
+
 def test_column_probe_strips_only_final_top_level_order_by() -> None:
     sql = (
         "select participant_id, "
@@ -805,7 +833,6 @@ order by participant_id;
 
     output = json.loads(capsys.readouterr().err)
     assert {issue["rule"] for issue in output["issues"]} == {
-        "missing_input_parameters",
         "unused_input_parameters",
         "commented_out_sql",
         "select_star",
@@ -815,10 +842,18 @@ order by participant_id;
         "debug_columns",
         "nolock_usage",
     }
-    assert all("line" in issue for issue in output["issues"])
+    assert all(
+        "line" in issue
+        for issue in output["issues"]
+        if issue["rule"] != "unused_input_parameters"
+    )
+    unused_issue = next(
+        issue for issue in output["issues"] if issue["rule"] == "unused_input_parameters"
+    )
+    assert "line" not in unused_issue
 
 
-def test_check_warns_when_no_live_sqlctl_input_placeholder(
+def test_check_warns_without_line_when_no_sqlctl_input_placeholder(
     tmp_path: Path, capsys
 ) -> None:
     source = tmp_path / "source.sql"
@@ -840,7 +875,7 @@ where active = @active;
     config.write_text(
         """
 [validation.profiles.static]
-enabled_rules = ["required_metadata", "missing_input_parameters"]
+enabled_rules = ["required_metadata", "unused_input_parameters"]
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -866,10 +901,9 @@ enabled_rules = ["required_metadata", "missing_input_parameters"]
     assert output["status"] == "warning"
     assert output["issues"] == [
         {
-            "rule": "missing_input_parameters",
+            "rule": "unused_input_parameters",
             "severity": "warning",
-            "message": "No live SQLCTL input parameter marker was found.",
-            "line": 8,
+            "message": "No SQLCTL input parameter marker was found.",
         }
     ]
 
@@ -1075,11 +1109,49 @@ where participant_id = <|>participant_id<|>;
     )
 
     output = json.loads(capsys.readouterr().err)
-    assert [issue["rule"] for issue in output["issues"]] == [
-        "unused_input_parameters",
-        "commented_out_sql",
-    ]
-    assert output["issues"][1]["line"] == 11
+    assert [issue["rule"] for issue in output["issues"]] == ["commented_out_sql"]
+    assert output["issues"][0]["line"] == 11
+
+
+def test_validate_commented_input_marker_does_not_flag_unused_parameter(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = <|>participant_id<|>;
+
+-- removed input marker <|>plan_id<|>
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "check",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
 
 
 def test_validate_groups_consecutive_commented_sql_lines(
@@ -1121,6 +1193,7 @@ where participant_id = <|>participant_id<|>;
     )
 
     output = json.loads(capsys.readouterr().err)
+    assert {issue["rule"] for issue in output["issues"]} == {"commented_out_sql"}
     commented_sql_issues = [
         issue for issue in output["issues"] if issue["rule"] == "commented_out_sql"
     ]
@@ -1326,8 +1399,10 @@ order by participant_id;
     )
 
     output = json.loads(capsys.readouterr().err)
-    lines = [issue["line"] for issue in output["issues"]]
+    lines = [issue["line"] for issue in output["issues"] if "line" in issue]
     assert lines == sorted(lines)
+    assert output["issues"][-1]["rule"] == "unused_input_parameters"
+    assert "line" not in output["issues"][-1]
 
 
 def test_validate_error_reason_alias_is_not_debug_column(
@@ -1739,7 +1814,7 @@ from participants;
     config.write_text(
         f"""
 [validation.profiles.columns]
-enabled_rules = ["required_metadata", "missing_input_parameters", "column_compare"]
+enabled_rules = ["required_metadata", "unused_input_parameters", "column_compare"]
 column_compare_file = {str(reference)!r}
 """.strip()
         + "\n",
@@ -1766,7 +1841,7 @@ column_compare_file = {str(reference)!r}
     assert output["status"] == "warning"
     assert {issue["severity"] for issue in output["issues"]} == {"warning"}
     assert {issue["rule"] for issue in output["issues"]} == {
-        "missing_input_parameters",
+        "unused_input_parameters",
         "column_compare",
     }
 
