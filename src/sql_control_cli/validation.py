@@ -267,17 +267,25 @@ def _validate_unused_input_parameters(
     sql_text: str, live_sql: str, comments: tuple[str, ...]
 ) -> list[ValidationIssue]:
     live_parameters = _input_parameters(live_sql)
-    comment_parameters = _input_parameters("\n".join(comments))
-    unused = sorted(comment_parameters - live_parameters)
-    return [
-        ValidationIssue(
-            "unused_input_parameters",
-            "error",
-            f"Input parameter appears only in comments: {parameter}",
-            line=_line_for_pattern(sql_text, re.escape(parameter)),
-        )
-        for parameter in unused
-    ]
+    issues: list[ValidationIssue] = []
+    reported: set[str] = set()
+    for line_number, comment in _comment_logic_lines(sql_text, comments):
+        normalized = _normalize_sql(comment)
+        if _looks_like_disabled_sql_comment(normalized):
+            continue
+        for parameter in sorted(_input_parameters(comment) - live_parameters):
+            if parameter in reported:
+                continue
+            reported.add(parameter)
+            issues.append(
+                ValidationIssue(
+                    "unused_input_parameters",
+                    "error",
+                    f"Input parameter appears only in comments: {parameter}",
+                    line=line_number,
+                )
+            )
+    return issues
 
 
 def _validate_commented_out_sql(

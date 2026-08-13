@@ -806,7 +806,6 @@ order by participant_id;
     output = json.loads(capsys.readouterr().err)
     assert {issue["rule"] for issue in output["issues"]} == {
         "missing_input_parameters",
-        "unused_input_parameters",
         "commented_out_sql",
         "select_star",
         "order_by_without_justification",
@@ -1075,11 +1074,55 @@ where participant_id = <|>participant_id<|>;
     )
 
     output = json.loads(capsys.readouterr().err)
-    assert [issue["rule"] for issue in output["issues"]] == [
-        "unused_input_parameters",
-        "commented_out_sql",
+    assert [issue["rule"] for issue in output["issues"]] == ["commented_out_sql"]
+    assert output["issues"][0]["line"] == 11
+
+
+def test_validate_plain_commented_input_marker_still_flags_unused_parameter(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = <|>participant_id<|>;
+
+-- removed input marker <|>plan_id<|>
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "check",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert output["issues"] == [
+        {
+            "rule": "unused_input_parameters",
+            "severity": "error",
+            "message": "Input parameter appears only in comments: plan_id",
+            "line": 11,
+        }
     ]
-    assert output["issues"][1]["line"] == 11
 
 
 def test_validate_groups_consecutive_commented_sql_lines(
@@ -1121,6 +1164,7 @@ where participant_id = <|>participant_id<|>;
     )
 
     output = json.loads(capsys.readouterr().err)
+    assert {issue["rule"] for issue in output["issues"]} == {"commented_out_sql"}
     commented_sql_issues = [
         issue for issue in output["issues"] if issue["rule"] == "commented_out_sql"
     ]
