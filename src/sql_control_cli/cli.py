@@ -238,11 +238,14 @@ def _run(args: argparse.Namespace, config) -> int:
             profile_name=args.profile,
             force_pass=args.force_pass,
         )
-        _emit(
-            result.to_dict(),
-            json_output=args.json,
-            stream=sys.stderr if not result.passed else None,
-        )
+        if args.json:
+            _emit(
+                result.to_dict(),
+                json_output=True,
+                stream=sys.stderr if not result.passed else None,
+            )
+        else:
+            _emit_validation_result(result, stream=sys.stderr if not result.passed else None)
         return 0 if result.passed else 2
     elif args.command == "prepare":
         validation = validate_sql_file(
@@ -404,3 +407,20 @@ def _emit(payload: object, *, json_output: bool, stream=None) -> None:
             print(f"{key}: {value}", file=active_stream)
     else:
         print(payload, file=active_stream)
+
+
+def _emit_validation_result(result, *, stream=None) -> None:
+    active_stream = sys.stdout if stream is None else stream
+    print(f"Validation {result.status}: {result.sql_file}", file=active_stream)
+    print(f"Profile: {result.profile_name}", file=active_stream)
+    print(f"Rules: {', '.join(result.enabled_rules)}", file=active_stream)
+    if not result.issues:
+        print("No issues found.", file=active_stream)
+        return
+    print("Issues:", file=active_stream)
+    for issue in result.issues:
+        location = f"line {issue.line}" if issue.line is not None else "line n/a"
+        print(
+            f"- [{issue.severity}] {issue.rule} ({location}): {issue.message}",
+            file=active_stream,
+        )

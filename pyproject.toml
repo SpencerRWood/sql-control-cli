@@ -1,6 +1,6 @@
 [project]
 name = "sql-control-cli"
-version = "0.1.1"
+version = "0.1.2"
 requires-python = ">=3.11"
 dependencies = []
 
@@ -47,7 +47,6 @@ error_rules = [
   "required_metadata",
   "allowed_team",
   "allowed_app",
-  "comparison_keys_required",
   "missing_input_parameters",
   "unused_input_parameters",
   "commented_out_sql",
@@ -64,9 +63,7 @@ warning_rules = ["column_compare"]
 [tool.sqlctl.validation.profiles.default]
 enabled_rules = [
   "required_metadata",
-  "allowed_team",
   "allowed_app",
-  "comparison_keys_required",
   "missing_input_parameters",
   "unused_input_parameters",
   "commented_out_sql",
@@ -83,9 +80,7 @@ enabled_rules = [
 [tool.sqlctl.validation.profiles.strict]
 enabled_rules = [
   "required_metadata",
-  "allowed_team",
   "allowed_app",
-  "comparison_keys_required",
   "missing_input_parameters",
   "unused_input_parameters",
   "commented_out_sql",

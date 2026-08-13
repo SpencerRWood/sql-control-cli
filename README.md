@@ -63,7 +63,6 @@ enabled_rules = [
   "required_metadata",
   "allowed_team",
   "allowed_app",
-  "comparison_keys_required",
   "missing_input_parameters",
   "unused_input_parameters",
   "commented_out_sql",
@@ -85,9 +84,9 @@ Use `--force-pass` to keep failures visible while allowing an approved prepare t
 Implemented validation rules:
 
 - `required_metadata`: requires `Query_Name`, `Connection_Name`, and `App_Name` in a leading SQL comment block.
-- `allowed_team`: requires `Team` and optionally limits it to `allowed_teams`.
+- `allowed_team`: when `Team` is present and `allowed_teams` is configured, limits it to allowed values.
 - `allowed_app`: optionally limits `App_Name` to `allowed_apps`.
-- `comparison_keys_required`: requires `Comparison Keys`.
+- `comparison_keys_required`: implemented for opt-in legacy profiles, but active default profiles do not require `Comparison Keys`.
 - `missing_input_parameters`: requires at least one live `@parameter` marker.
 - `unused_input_parameters`: flags `@parameter` markers that appear only in comments.
 - `commented_out_sql`: flags comments that look like disabled SQL logic.
