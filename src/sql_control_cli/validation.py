@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import SqlctlConfig, ValidationProfile
-from .database import DatabaseError, query_columns, query_source_columns
+from .database import (
+    DatabaseError,
+    final_query_select_statement,
+    query_columns,
+    query_source_columns,
+)
 from .metadata import (
     MetadataError,
     QueryMetadata,
@@ -179,7 +184,7 @@ def validate_sql_file(
         profile_name,
         enabled_rules,
         metadata,
-        tuple(issues),
+        _sort_issues_by_line(issues),
         force_passed=force_pass and bool(issues),
     )
 
@@ -292,16 +297,28 @@ def _validate_commented_out_sql(
 
 def _looks_like_disabled_sql_comment(normalized_comment: str) -> bool:
     if re.search(
-        r"\b(select|join|where|insert|update|delete|merge)\b",
+        r"^\s*\(?\s*(?:select|insert|update|delete|merge)\b",
         normalized_comment,
     ):
         return True
-    if not re.search(r"\b(and|or)\b", normalized_comment):
+    if re.search(
+        r"^\s*\(?\s*(?:join|inner\s+join|left\s+join|right\s+join|"
+        r"full\s+join|cross\s+join|where)\b",
+        normalized_comment,
+    ):
+        return True
+    if re.search(
+        r"\b(?:must|then|days?|months?|years?)\b",
+        normalized_comment,
+    ):
         return False
     return bool(
         re.search(
-            r"(@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*\s*(?:=|<>|!=|<=|>=|<|>)|"
-            r"\b(?:like|in|between|is\s+null|is\s+not\s+null)\b)",
+            r"^\s*(?:and|or\s+)?\(?\s*"
+            r"(?:@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*)"
+            r"(?:\s*(?:=|<>|!=|<=|>=|<|>|like\b)\s*"
+            r"(?:@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*\b|'[^']*'|\d+\b|\w+\s*\()|"
+            r"\s+(?:in\b|between\b|is\s+null\b|is\s+not\s+null\b))",
             normalized_comment,
         )
     )
@@ -396,7 +413,10 @@ def _validate_hard_coded_sensitive_literals(
 
 def _validate_debug_columns(sql_text: str, live_sql: str) -> list[ValidationIssue]:
     normalized = _normalize_sql(live_sql)
-    pattern = r"\bas\s+\[?(?:debug\w*|row_count|error\w*|test\w*|tmp\w*)\]?\b"
+    pattern = (
+        r"\bas\s+\[?(?:debug\w*|row_count|error|error_count|error_msg|"
+        r"test\w*|tmp\w*)\]?\b"
+    )
     if re.search(pattern, normalized):
         return [
             ValidationIssue(
@@ -407,6 +427,18 @@ def _validate_debug_columns(sql_text: str, live_sql: str) -> list[ValidationIssu
             )
         ]
     return []
+
+
+def _sort_issues_by_line(issues: list[ValidationIssue]) -> tuple[ValidationIssue, ...]:
+    ordered = sorted(
+        enumerate(issues),
+        key=lambda item: (
+            item[1].line is None,
+            item[1].line if item[1].line is not None else 0,
+            item[0],
+        ),
+    )
+    return tuple(issue for _index, issue in ordered)
 
 
 def _validate_nolock_usage(sql_text: str, live_sql: str) -> list[ValidationIssue]:
@@ -659,11 +691,14 @@ def _candidate_reference_source_names(metadata: QueryMetadata) -> tuple[str, ...
 
 def _final_select_columns(sql_text: str) -> tuple[str, ...] | None:
     live_sql, _comments = _split_sql_sections(sql_text)
-    select_bounds = _final_top_level_select_bounds(live_sql)
+    final_select = final_query_select_statement(live_sql)
+    if final_select is None:
+        return None
+    select_bounds = _final_top_level_select_bounds(final_select)
     if select_bounds is None:
         return None
     start, end = select_bounds
-    select_list = live_sql[start:end].strip()
+    select_list = final_select[start:end].strip()
     select_list = re.sub(
         r"^(?:distinct\s+)?(?:top\s*\(?\s*\d+\s*\)?\s+)?",
         "",

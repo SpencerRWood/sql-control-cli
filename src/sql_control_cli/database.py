@@ -282,11 +282,14 @@ def query_columns(
     sql: str,
     source_name: str | None = None,
 ) -> tuple[str, ...]:
+    query_sql = final_query_select_statement(sql)
+    if query_sql is None:
+        raise DatabaseError("Could not resolve final query SELECT statement.")
     return execute_query(
         config,
         connection_name=connection_name,
-        sql=column_probe_sql(sql),
-        parameters=probe_parameters(sql),
+        sql=column_probe_sql(query_sql),
+        parameters=probe_parameters(query_sql),
         source_name=source_name,
     ).columns
 
@@ -294,6 +297,93 @@ def query_columns(
 def column_probe_sql(sql: str) -> str:
     probe_source = strip_top_level_order_by(sql.rstrip().rstrip(";"))
     return f"select * from (\n{probe_source}\n) as sqlctl_column_probe where 1 = 0"
+
+
+def final_query_select_statement(sql: str) -> str | None:
+    lowered = sql.lower()
+    depth = 0
+    index = 0
+    active_with_start: int | None = None
+    final_select_start: int | None = None
+    final_statement_start: int | None = None
+    while index < len(sql):
+        char = sql[index]
+        if char == "'":
+            index = _skip_quoted_string(sql, index)
+            continue
+        if sql.startswith("--", index):
+            index = _skip_line_comment(sql, index)
+            continue
+        if sql.startswith("/*", index):
+            index = _skip_block_comment(sql, index)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and char == ";":
+            active_with_start = None
+        elif depth == 0 and _word_at(lowered, index, "with"):
+            active_with_start = index
+        elif depth == 0 and _word_at(lowered, index, "select"):
+            final_select_start = index
+            final_statement_start = active_with_start or index
+            active_with_start = None
+        index += 1
+    if final_select_start is None or final_statement_start is None:
+        return None
+
+    end = _top_level_statement_end(sql, final_select_start)
+    return sql[final_statement_start:end].strip()
+
+
+def _top_level_statement_end(sql: str, start: int) -> int:
+    depth = 0
+    index = start
+    while index < len(sql):
+        char = sql[index]
+        if char == "'":
+            index = _skip_quoted_string(sql, index)
+            continue
+        if sql.startswith("--", index):
+            index = _skip_line_comment(sql, index)
+            continue
+        if sql.startswith("/*", index):
+            index = _skip_block_comment(sql, index)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and (
+            char == ";"
+            or (index > start and _starts_following_statement(sql, index))
+        ):
+            return index
+        index += 1
+    return len(sql)
+
+
+def _starts_following_statement(sql: str, index: int) -> bool:
+    previous = sql[index - 1] if index > 0 else ""
+    if previous and not previous.isspace():
+        return False
+    lowered = sql.lower()
+    return any(
+        _word_at(lowered, index, word)
+        for word in (
+            "declare",
+            "create",
+            "drop",
+            "insert",
+            "update",
+            "delete",
+            "merge",
+            "exec",
+            "execute",
+            "set",
+        )
+    )
 
 
 def strip_top_level_order_by(sql: str) -> str:
@@ -411,3 +501,13 @@ def _skip_quoted_string(value: str, start: int) -> int:
             return index + 1
         index += 1
     return len(value)
+
+
+def _skip_line_comment(value: str, start: int) -> int:
+    newline = value.find("\n", start + 2)
+    return len(value) if newline < 0 else newline + 1
+
+
+def _skip_block_comment(value: str, start: int) -> int:
+    end = value.find("*/", start + 2)
+    return len(value) if end < 0 else end + 2

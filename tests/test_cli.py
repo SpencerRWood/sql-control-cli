@@ -13,6 +13,7 @@ from sql_control_cli.database import (
     MSSQLAdapter,
     column_probe_sql,
     execute_query,
+    final_query_select_statement,
     inspect_connection,
     mssql_named_parameters,
     probe_parameters,
@@ -402,6 +403,84 @@ def test_column_probe_strips_only_final_top_level_order_by() -> None:
     )
 
 
+def test_final_query_select_statement_uses_last_select_from_multistatement_script() -> None:
+    sql = """
+DECLARE @p1 char(50)
+DECLARE @p2 char(50)
+
+create table #planexclude (clnt_id_n int, db_plan_n char(5))
+insert into #planexclude values (722846, '011')
+
+select participant_id, name
+from #results
+where participant_id = @participant_id
+order by participant_id;
+"""
+
+    assert final_query_select_statement(sql) == (
+        "select participant_id, name\n"
+        "from #results\n"
+        "where participant_id = @participant_id\n"
+        "order by participant_id"
+    )
+
+
+def test_final_query_select_statement_keeps_cte_for_last_select() -> None:
+    sql = """
+DECLARE @p1 char(50)
+
+with final_rows as (
+    select participant_id, name from participants
+)
+select participant_id, name
+from final_rows;
+"""
+
+    assert final_query_select_statement(sql) == (
+        "with final_rows as (\n"
+        "    select participant_id, name from participants\n"
+        ")\n"
+        "select participant_id, name\n"
+        "from final_rows"
+    )
+
+
+def test_final_query_select_statement_stops_before_cleanup_without_semicolon() -> None:
+    sql = """
+DECLARE @p1 char(50)
+
+select participant_id, name
+from #results
+where participant_id = @participant_id
+drop table #results
+"""
+
+    assert final_query_select_statement(sql) == (
+        "select participant_id, name\n"
+        "from #results\n"
+        "where participant_id = @participant_id"
+    )
+
+
+def test_final_query_select_statement_ignores_intermediate_selects() -> None:
+    sql = """
+select setup_id
+from #setup;
+
+insert into #results
+select participant_id, name
+from participants;
+
+select participant_id, name, status
+from #results;
+"""
+
+    assert final_query_select_statement(sql) == (
+        "select participant_id, name, status\n"
+        "from #results"
+    )
+
+
 def write_validation_config(path: Path) -> Path:
     config = path / "sqlctl.toml"
     config.write_text(
@@ -734,6 +813,129 @@ where participant_id = @participant_id;
     assert output["issues"] == []
 
 
+def test_validate_business_rule_comment_with_condition_words_is_not_disabled_sql(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+--Fail1 bcd is les than process date (not deceased and benf_calc_c = 2) THEN ben_elig_d is no more than 6 months ago and is no more than 30 days in the future (between -6 months and + 30 days)
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
+
+
+def test_validate_business_rule_comment_with_select_word_is_not_disabled_sql(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+--Fail2 Select ATT Plans/Executive (must wait 6 months after term to receive a payment)
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
+
+
+def test_validate_business_rule_comment_with_duration_comparison_is_not_disabled_sql(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+--bcd <= 60 days from process date then ben_elig_d must be between 30 and 60 days from process date
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
+
+
 def test_validate_commented_predicate_still_flags_disabled_sql(
     tmp_path: Path, capsys
 ) -> None:
@@ -816,6 +1018,199 @@ where participant_id = '123456789';
     assert "Issues:" in output
     assert "- [error] select_star (line 7):" in output
     assert "- [error] hard_coded_sensitive_literals (line 9):" in output
+    assert "\033[" not in output
+
+
+def test_validate_text_output_can_be_colorized(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select *
+from participants
+where participant_id = '123456789';
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--color",
+                "always",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr().err
+    assert "Validation \033[31mfailed\033[0m:" in output
+    assert "- [\033[31merror\033[0m] select_star (\033[34mline 7\033[0m):" in output
+
+
+def test_validate_json_output_is_not_colorized(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select *
+from participants
+where participant_id = '123456789';
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--color",
+                "always",
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr().err
+    assert "\033[" not in output
+    assert json.loads(output)["status"] == "failed"
+
+
+def test_validate_orders_issues_by_line_number(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select *
+from participants with (nolock)
+where participant_id = '123456789'
+order by participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    lines = [issue["line"] for issue in output["issues"]]
+    assert lines == sorted(lines)
+
+
+def test_validate_error_reason_alias_is_not_debug_column(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select
+    case when participant_id is null then 'missing' end as Error_Reason
+from participants
+where participant_id = @participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["issues"] == []
+
+
+def test_validate_debug_alias_still_flags_debug_column(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id as debug_participant_id
+from participants
+where participant_id = @participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert [issue["rule"] for issue in output["issues"]] == ["debug_columns"]
 
 
 def test_validate_write_operation_allows_temp_tables(tmp_path: Path, capsys) -> None:
