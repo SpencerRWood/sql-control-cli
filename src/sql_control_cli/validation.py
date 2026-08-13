@@ -277,10 +277,7 @@ def _validate_commented_out_sql(
     issues = []
     for comment in _comment_logic_lines(comments):
         normalized = _normalize_sql(comment)
-        if re.search(
-            r"\b(select|join|where|and|or|insert|update|delete|merge)\b",
-            normalized,
-        ):
+        if _looks_like_disabled_sql_comment(normalized):
             issues.append(
                 ValidationIssue(
                     "commented_out_sql",
@@ -291,6 +288,23 @@ def _validate_commented_out_sql(
             )
             break
     return issues
+
+
+def _looks_like_disabled_sql_comment(normalized_comment: str) -> bool:
+    if re.search(
+        r"\b(select|join|where|insert|update|delete|merge)\b",
+        normalized_comment,
+    ):
+        return True
+    if not re.search(r"\b(and|or)\b", normalized_comment):
+        return False
+    return bool(
+        re.search(
+            r"(@[a-z_][a-z0-9_]*|[a-z_][a-z0-9_.]*\s*(?:=|<>|!=|<=|>=|<|>)|"
+            r"\b(?:like|in|between|is\s+null|is\s+not\s+null)\b)",
+            normalized_comment,
+        )
+    )
 
 
 def _validate_select_star(sql_text: str, live_sql: str) -> list[ValidationIssue]:

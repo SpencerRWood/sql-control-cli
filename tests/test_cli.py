@@ -9,6 +9,8 @@ from sql_control_cli import config as config_module
 from sql_control_cli.cli import main
 from sql_control_cli.config import load_config
 from sql_control_cli.database import (
+    DatabaseConnectionConfig,
+    MSSQLAdapter,
     column_probe_sql,
     execute_query,
     inspect_connection,
@@ -333,6 +335,48 @@ def test_mssql_named_parameters_translate_for_pyodbc() -> None:
     assert parameters == (123, "011", 123)
 
 
+def test_mssql_connection_string_keeps_named_instance_without_port() -> None:
+    adapter = MSSQLAdapter(
+        "rpa_mssql",
+        DatabaseConnectionConfig(
+            driver="mssql",
+            sql_driver="ODBC Driver 17 for SQL Server",
+            server=r"rpa-server\sqlinst",
+            port=1433,
+            database="wirpa_dev",
+            username="rpa-user",
+            password="rpa-password",
+            trust_server_certificate=True,
+        ),
+    )
+
+    connection_string = adapter._connection_string()
+
+    assert "SERVER={rpa-server\\sqlinst}" in connection_string
+    assert "SERVER={rpa-server\\sqlinst,1433}" not in connection_string
+
+
+def test_mssql_connection_string_appends_port_for_plain_server() -> None:
+    adapter = MSSQLAdapter(
+        "rpa_mssql",
+        DatabaseConnectionConfig(
+            driver="mssql",
+            sql_driver="ODBC Driver 17 for SQL Server",
+            server="rpa-server",
+            port=1433,
+            database="wirpa_dev",
+            username="rpa-user",
+            password="rpa;password",
+            trust_server_certificate=True,
+        ),
+    )
+
+    connection_string = adapter._connection_string()
+
+    assert "SERVER={rpa-server,1433}" in connection_string
+    assert "PWD={rpa;password}" in connection_string
+
+
 def test_column_probe_sql_and_parameters_are_zero_row_safe() -> None:
     sql = "select participant_id, name from dbo.Participants where participant_id = @participant_id;"
 
@@ -647,6 +691,91 @@ order by participant_id;
         "nolock_usage",
     }
     assert all("line" in issue for issue in output["issues"])
+
+
+def test_validate_comment_with_plain_english_and_is_not_disabled_sql(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+-- Both 1003 and 1013 exist
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+    assert output["issues"] == []
+
+
+def test_validate_commented_predicate_still_flags_disabled_sql(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants
+where participant_id = @participant_id;
+
+-- and plan_id = @plan_id
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert [issue["rule"] for issue in output["issues"]] == [
+        "unused_input_parameters",
+        "commented_out_sql",
+    ]
+    assert output["issues"][1]["line"] == 11
 
 
 def test_validate_text_output_is_readable_with_line_numbers(

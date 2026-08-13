@@ -157,20 +157,29 @@ class MSSQLAdapter:
         )
 
     def _connection_string(self) -> str:
-        server = self.config.server
-        if self.config.port is not None:
-            server = f"{server},{self.config.port}"
+        server = _mssql_server_endpoint(self.config.server, self.config.port)
         trust = "yes" if self.config.trust_server_certificate else "no"
         return ";".join(
             [
-                f"DRIVER={{{self.config.sql_driver}}}",
-                f"SERVER={server}",
-                f"DATABASE={self.config.database}",
-                f"UID={self.config.username}",
-                f"PWD={self.config.password}",
+                f"DRIVER={_odbc_value(self.config.sql_driver)}",
+                f"SERVER={_odbc_value(server)}",
+                f"DATABASE={_odbc_value(self.config.database)}",
+                f"UID={_odbc_value(self.config.username)}",
+                f"PWD={_odbc_value(self.config.password)}",
                 f"TrustServerCertificate={trust}",
             ]
         )
+
+
+def _mssql_server_endpoint(server: str, port: int | None) -> str:
+    if port is None or "\\" in server or "," in server:
+        return server
+    return f"{server},{port}"
+
+
+def _odbc_value(value: str) -> str:
+    escaped = value.replace("}", "}}")
+    return f"{{{escaped}}}"
 
 
 def get_connection_config(config: SqlctlConfig, name: str) -> DatabaseConnectionConfig:
