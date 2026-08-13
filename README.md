@@ -14,6 +14,31 @@ uv run pytest
 uv run ruff check .
 ```
 
+## Global Editable Install
+
+Install the CLI as a global `uv` tool from the cloned repository:
+
+```bash
+uv tool install --editable /path/to/sql-control-cli
+```
+
+Install SQL Server support with the optional `mssql` extra:
+
+```bash
+uv tool install --editable /path/to/sql-control-cli --with pyodbc
+```
+
+For an in-repo development environment, use:
+
+```bash
+uv sync --group dev --extra mssql
+```
+
+When installed this way, `sqlctl` can be run from any directory. It also loads `.env` from the
+project repository automatically, so repo-level settings such as `SQLCTL_CONFIG`,
+`SQLCTL_STORAGE_PATH`, and `SQLCTL_MANAGED_ROOT` can travel with the editable install. Environment
+variables set in the terminal still take precedence over values in `.env`.
+
 ## Validation And Prepare
 
 Validate a SQL file before capture:
@@ -32,12 +57,74 @@ Validation profiles live in `sqlctl.toml`:
 
 ```toml
 [validation.profiles.strict]
-enabled_rules = ["required_metadata", "allowed_team", "allowed_app", "comparison_keys_required"]
+enabled_rules = [
+  "required_metadata",
+  "allowed_team",
+  "allowed_app",
+  "comparison_keys_required",
+  "missing_input_parameters",
+  "unused_input_parameters",
+  "commented_out_sql",
+  "select_star",
+  "order_by_without_justification",
+  "top_without_justification",
+  "hard_coded_sensitive_literals",
+  "debug_columns",
+  "nolock_usage",
+  "write_operation"
+]
 allowed_teams = ["Benefits"]
 allowed_apps = ["Defined Benefits"]
 ```
 
 Use `--force-pass` to keep failures visible while allowing an approved prepare to continue.
+
+Implemented validation rules:
+
+- `required_metadata`: requires `Query_Name`, `Connection_Name`, and `App_Name` in a leading SQL comment block.
+- `allowed_team`: requires `Team` and optionally limits it to `allowed_teams`.
+- `allowed_app`: optionally limits `App_Name` to `allowed_apps`.
+- `comparison_keys_required`: requires `Comparison Keys`.
+- `missing_input_parameters`: requires at least one live `@parameter` marker.
+- `unused_input_parameters`: flags `@parameter` markers that appear only in comments.
+- `commented_out_sql`: flags comments that look like disabled SQL logic.
+- `select_star`: flags `SELECT *`, including `SELECT TOP ... *` and `SELECT DISTINCT *`.
+- `order_by_without_justification`: requires a reason comment for `ORDER BY`.
+- `top_without_justification`: requires a reason comment for `TOP`.
+- `hard_coded_sensitive_literals`: flags SSN-shaped values and literal comparisons on sensitive identifier fields.
+- `debug_columns`: flags temporary or diagnostic output aliases.
+- `nolock_usage`: flags `NOLOCK` and `WITH (NOLOCK)`.
+- `write_operation`: flags non-temp-table writes and schema operations; temp tables beginning with `#` are allowed, but `EXEC` and `EXECUTE` are always flagged.
+- `column_compare`: compares the output column names and order from the final top-level `SELECT`
+  against a reference query from either a configured repository source or an alternate SQL file.
+  It reports warnings when columns differ or when compare inputs cannot be resolved; those warnings
+  do not fail validation unless another enabled rule reports an error. Repository-source
+  comparisons ask the configured database for a zero-row result shape, so SQL Server column aliases
+  and expression names come from the driver metadata without fetching report rows.
+
+Configure `column_compare` with an explicit repository source:
+
+```toml
+[validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+column_compare_source = "participant_lookup_reference"
+
+[repository.sources.participant_lookup_reference]
+connection = "warehouse"
+sql = "select participant_id, name from production_participants"
+```
+
+Or configure it with an alternate SQL file:
+
+```toml
+[validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+column_compare_file = "reference/participant_lookup.sql"
+```
+
+If `column_compare_source` and `column_compare_file` are omitted, `sqlctl` attempts to find a
+repository source using normalized names derived from `Query_Name`, `Connection_Name`, and
+`App_Name`.
 
 ## Database And Repository Sources
 
@@ -52,6 +139,55 @@ path = "warehouse.sqlite3"
 connection = "warehouse"
 sql = "select * from participants where participant_id = :participant_id"
 ```
+
+The project `pyproject.toml` provides an active default `rpa_mssql` connection template. Fill in
+the machine-specific values in the repository `.env`:
+
+```env
+SQLCTL_RPA_MSSQL_SERVER=your-server-name
+SQLCTL_RPA_MSSQL_DATABASE=your_database
+SQLCTL_RPA_MSSQL_USERNAME=your_username
+SQLCTL_RPA_MSSQL_PASSWORD=your_password
+```
+
+The active template is equivalent to:
+
+```toml
+[tool.sqlctl.database.connection_templates.rpa_mssql]
+driver = "mssql"
+sql_driver = "ODBC Driver 17 for SQL Server"
+server_env = "SQLCTL_RPA_MSSQL_SERVER"
+port = 1433
+database_env = "SQLCTL_RPA_MSSQL_DATABASE"
+username_env = "SQLCTL_RPA_MSSQL_USERNAME"
+password_env = "SQLCTL_RPA_MSSQL_PASSWORD"
+trust_server_certificate = true
+```
+
+Use `sqlctl.toml` only when you need local overrides, validation profiles, or repository sources:
+
+```toml
+
+[validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+column_compare_source = "participant_lookup_reference"
+
+[repository.sources.participant_lookup_reference]
+connection = "rpa_mssql"
+sql = """
+select participant_id, name
+from dbo.Participants
+where participant_id = @participant_id
+"""
+```
+
+SQL Server repository sources may use `@parameter` markers. `sqlctl` translates them to ODBC
+positional parameters for `pyodbc`.
+
+The project-level `pyproject.toml` includes a `[tool.sqlctl]` section that supplies default
+`strict` and `columns` validation profiles, the active `rpa_mssql` connection template, and the
+implemented validation rules, warning-only rules, and required/optional connection fields. Keep
+machine-specific values in `.env`, environment variables, or explicit local overrides.
 
 Inspect connection metadata:
 

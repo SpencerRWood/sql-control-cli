@@ -12,12 +12,28 @@ class ValidationProfile:
     enabled_rules: tuple[str, ...] = ("required_metadata",)
     allowed_teams: tuple[str, ...] = ()
     allowed_apps: tuple[str, ...] = ()
+    column_compare_source: str = ""
+    column_compare_file: Path | None = None
 
 
 @dataclass(frozen=True)
 class DatabaseConnectionConfig:
     driver: str
     path: Path | None = None
+    sql_driver: str = ""
+    server: str = ""
+    port: int | None = None
+    database: str = ""
+    username: str = ""
+    password: str = ""
+    sql_driver_env: str = ""
+    server_env: str = ""
+    port_env: str = ""
+    database_env: str = ""
+    username_env: str = ""
+    password_env: str = ""
+    trust_server_certificate_env: str = ""
+    trust_server_certificate: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,6 +74,20 @@ def default_project_config_path() -> Path:
     return Path.cwd() / "sqlctl.toml"
 
 
+def default_package_env_path() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent / ".env"
+    return None
+
+
+def default_package_config_path() -> Path | None:
+    env_path = default_package_env_path()
+    if env_path is None:
+        return None
+    return env_path.parent / "pyproject.toml"
+
+
 def default_state_root() -> Path:
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -75,7 +105,7 @@ def load_config(
     managed_root: Path | None = None,
     env: dict[str, str] | None = None,
 ) -> SqlctlConfig:
-    active_env = dict(os.environ if env is None else env)
+    active_env = _active_environment(env)
     state_root = default_state_root()
     values: dict[str, Any] = {
         "storage_path": state_root / "sqlctl.sqlite3",
@@ -87,7 +117,15 @@ def load_config(
         "test_publishing": {},
     }
 
-    paths = [default_user_config_path(), default_project_config_path()]
+    paths = [
+        path
+        for path in (
+            default_package_config_path(),
+            default_user_config_path(),
+            default_project_config_path(),
+        )
+        if path is not None
+    ]
     if active_env.get("SQLCTL_CONFIG"):
         paths.append(Path(active_env["SQLCTL_CONFIG"]))
     if config_paths:
@@ -119,7 +157,7 @@ def load_config(
             for name, raw_profile in dict(values["validation_profiles"]).items()
         },
         database_connections={
-            name: _database_connection(raw_connection)
+            name: _database_connection(raw_connection, active_env)
             for name, raw_connection in dict(values["database_connections"]).items()
         },
         query_sources={
@@ -128,6 +166,45 @@ def load_config(
         },
         test_publishing=_test_publishing(values["test_publishing"]),
     )
+
+
+def _active_environment(env: dict[str, str] | None) -> dict[str, str]:
+    active_env = dict(os.environ if env is None else env)
+    package_env_path = default_package_env_path()
+    if package_env_path is None:
+        return active_env
+    file_env = _read_env_file(package_env_path)
+    return {**file_env, **active_env}
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = _env_value(value)
+    return values
+
+
+def _env_value(raw_value: str) -> str:
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    comment_index = value.find(" #")
+    if comment_index >= 0:
+        value = value[:comment_index].rstrip()
+    return value
 
 
 def _read_toml(path: Path) -> dict[str, Any]:
@@ -139,6 +216,10 @@ def _read_toml(path: Path) -> dict[str, Any]:
 
 
 def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
+    tool = data.get("tool") if isinstance(data.get("tool"), dict) else {}
+    sqlctl = tool.get("sqlctl") if isinstance(tool.get("sqlctl"), dict) else {}
+    if sqlctl:
+        data = _merge(_flatten_tool_sqlctl(sqlctl), data)
     storage = data.get("storage") if isinstance(data.get("storage"), dict) else {}
     managed = data.get("managed") if isinstance(data.get("managed"), dict) else {}
     comparison = (
@@ -160,17 +241,47 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
         "normalize_whitespace": data.get("normalize_whitespace")
         if "normalize_whitespace" in data
         else comparison.get("normalize_whitespace"),
-        "validation_profiles": validation.get("profiles")
+        "validation_profiles": data.get("validation_profiles")
+        or validation.get("profiles")
         if isinstance(validation.get("profiles"), dict)
+        or isinstance(data.get("validation_profiles"), dict)
         else None,
-        "database_connections": database.get("connections")
+        "database_connections": data.get("database_connections")
+        or database.get("connections")
         if isinstance(database.get("connections"), dict)
+        or isinstance(data.get("database_connections"), dict)
         else None,
-        "query_sources": repository.get("sources")
+        "query_sources": data.get("query_sources")
+        or repository.get("sources")
         if isinstance(repository.get("sources"), dict)
+        or isinstance(data.get("query_sources"), dict)
         else None,
         "test_publishing": publishing.get("test")
         if isinstance(publishing.get("test"), dict)
+        else None,
+    }
+
+
+def _flatten_tool_sqlctl(sqlctl: dict[str, Any]) -> dict[str, Any]:
+    database = sqlctl.get("database") if isinstance(sqlctl.get("database"), dict) else {}
+    repository = (
+        sqlctl.get("repository") if isinstance(sqlctl.get("repository"), dict) else {}
+    )
+    validation = (
+        sqlctl.get("validation") if isinstance(sqlctl.get("validation"), dict) else {}
+    )
+    database_connections = database.get("connections")
+    if not isinstance(database_connections, dict):
+        database_connections = database.get("connection_templates")
+    return {
+        "validation_profiles": validation.get("profiles")
+        if isinstance(validation.get("profiles"), dict)
+        else None,
+        "database_connections": database_connections
+        if isinstance(database_connections, dict)
+        else None,
+        "query_sources": repository.get("sources")
+        if isinstance(repository.get("sources"), dict)
         else None,
     }
 
@@ -198,6 +309,10 @@ def _validation_profile(raw_profile: Any) -> ValidationProfile:
         allowed_apps=tuple(
             str(value) for value in _list_value(profile.get("allowed_apps"), [])
         ),
+        column_compare_source=str(profile.get("column_compare_source") or ""),
+        column_compare_file=Path(str(profile["column_compare_file"])).expanduser()
+        if profile.get("column_compare_file")
+        else None,
     )
 
 
@@ -209,13 +324,45 @@ def _list_value(value: Any, default: list[str]) -> list[Any]:
     return [value]
 
 
-def _database_connection(raw_connection: Any) -> DatabaseConnectionConfig:
+def _database_connection(
+    raw_connection: Any, active_env: dict[str, str]
+) -> DatabaseConnectionConfig:
     connection = raw_connection if isinstance(raw_connection, dict) else {}
     driver = str(connection.get("driver") or "sqlite")
     path_value = connection.get("path")
+    sql_driver_env = str(connection.get("sql_driver_env") or "")
+    server_env = str(connection.get("server_env") or "")
+    port_env = str(connection.get("port_env") or "")
+    database_env = str(connection.get("database_env") or "")
+    username_env = str(connection.get("username_env") or "")
+    password_env = str(connection.get("password_env") or "")
+    trust_server_certificate_env = str(
+        connection.get("trust_server_certificate_env") or ""
+    )
     return DatabaseConnectionConfig(
         driver=driver,
         path=Path(str(path_value)).expanduser() if path_value else None,
+        sql_driver=str(
+            connection.get("sql_driver") or active_env.get(sql_driver_env, "")
+        ),
+        server=str(connection.get("server") or active_env.get(server_env, "")),
+        port=_int_value(connection.get("port") or active_env.get(port_env)),
+        database=str(connection.get("database") or active_env.get(database_env, "")),
+        username=str(connection.get("username") or active_env.get(username_env, "")),
+        password=str(connection.get("password") or active_env.get(password_env, "")),
+        sql_driver_env=sql_driver_env,
+        server_env=server_env,
+        port_env=port_env,
+        database_env=database_env,
+        username_env=username_env,
+        password_env=password_env,
+        trust_server_certificate_env=trust_server_certificate_env,
+        trust_server_certificate=_bool_value(
+            connection.get("trust_server_certificate")
+            if connection.get("trust_server_certificate") is not None
+            else active_env.get(trust_server_certificate_env),
+            default=False,
+        ),
     )
 
 
@@ -234,3 +381,19 @@ def _test_publishing(raw_publishing: Any) -> TestPublishingConfig:
         connection=str(publishing.get("connection") or ""),
         table=str(publishing.get("table") or "sqlctl_test_queries"),
     )
+
+
+def _int_value(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def _bool_value(value: Any, *, default: bool) -> bool:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}

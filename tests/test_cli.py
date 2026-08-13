@@ -2,16 +2,62 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tomllib
 from pathlib import Path
 
+from sql_control_cli import config as config_module
 from sql_control_cli.cli import main
 from sql_control_cli.config import load_config
-from sql_control_cli.database import execute_query, inspect_connection
+from sql_control_cli.database import (
+    column_probe_sql,
+    execute_query,
+    inspect_connection,
+    mssql_named_parameters,
+    probe_parameters,
+    strip_top_level_order_by,
+)
 from sql_control_cli.metadata import parse_metadata, source_hash
+from sql_control_cli.validation import DEFAULT_RULES
 
 
 def test_cli_version() -> None:
     assert main(["--version"]) == 0
+
+
+def test_pyproject_documents_sqlctl_runtime_contract() -> None:
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    sqlctl = pyproject["tool"]["sqlctl"]
+
+    assert tuple(sqlctl["validation"]["implemented_rules"]) == DEFAULT_RULES
+    assert sqlctl["validation"]["default_rules"] == ["required_metadata"]
+    assert sqlctl["validation"]["warning_rules"] == ["column_compare"]
+    assert "column_compare" not in sqlctl["validation"]["error_rules"]
+    assert tuple(sqlctl["validation"]["profiles"]["strict"]["enabled_rules"]) == (
+        DEFAULT_RULES
+    )
+    assert sqlctl["validation"]["profiles"]["columns"]["enabled_rules"] == [
+        "required_metadata",
+        "column_compare",
+    ]
+
+    mssql_fields = sqlctl["database"]["connection_fields"]["mssql"]
+    assert mssql_fields["required"] == [
+        "driver",
+        "sql_driver",
+        "server_env",
+        "database_env",
+        "username_env",
+        "password_env",
+    ]
+    assert mssql_fields["secret_fields"] == ["username", "password"]
+    assert mssql_fields["secret_env_fields"] == ["username_env", "password_env"]
+
+    template = sqlctl["database"]["connection_templates"]["rpa_mssql"]
+    assert template["driver"] == "mssql"
+    assert template["server_env"] == "SQLCTL_RPA_MSSQL_SERVER"
+    assert template["database_env"] == "SQLCTL_RPA_MSSQL_DATABASE"
+    assert template["username_env"] == "SQLCTL_RPA_MSSQL_USERNAME"
+    assert template["password_env"] == "SQLCTL_RPA_MSSQL_PASSWORD"
 
 
 def sql_fixture() -> str:
@@ -42,6 +88,23 @@ def test_parse_required_metadata() -> None:
         "defined-benefits",
     )
     assert metadata.comparison_keys == ("participant_id",)
+
+
+def test_parse_metadata_from_star_prefixed_block_comment() -> None:
+    metadata = parse_metadata(
+        """/*
+ * Query_Name: DB_Validation_7
+ * Connection_Name: DBCS_AzureConnection
+ * App_Name: DBCS
+ */
+
+select 1;
+"""
+    )
+
+    assert metadata.query_name == "DB_Validation_7"
+    assert metadata.connection_name == "DBCS_AzureConnection"
+    assert metadata.app_name == "DBCS"
 
 
 def test_hash_excludes_managed_version_fields() -> None:
@@ -111,6 +174,174 @@ def test_status_reports_unchanged_after_capture(tmp_path: Path, capsys) -> None:
     assert output["latest_version"] == 1
 
 
+def test_load_config_reads_package_env_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    package_env = tmp_path / ".env"
+    storage_path = tmp_path / "from-env.sqlite3"
+    managed_root = tmp_path / "from-env-managed"
+    package_env.write_text(
+        f"""
+SQLCTL_STORAGE_PATH={storage_path}
+SQLCTL_MANAGED_ROOT="{managed_root}"
+SQLCTL_NORMALIZE_WHITESPACE=false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "default_package_env_path", lambda: package_env)
+
+    config = load_config(env={})
+
+    assert config.storage_path == storage_path
+    assert config.managed_root == managed_root
+    assert config.normalize_whitespace is False
+
+
+def test_real_environment_overrides_package_env_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    package_env = tmp_path / ".env"
+    package_env.write_text(
+        f"SQLCTL_STORAGE_PATH={tmp_path / 'from-env.sqlite3'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "default_package_env_path", lambda: package_env)
+
+    config = load_config(env={"SQLCTL_STORAGE_PATH": str(tmp_path / "from-shell.sqlite3")})
+
+    assert config.storage_path == tmp_path / "from-shell.sqlite3"
+
+
+def test_load_config_uses_package_pyproject_sqlctl_connection_template(
+    tmp_path: Path, monkeypatch
+) -> None:
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    package_env = package_root / ".env"
+    package_env.write_text(
+        """
+SQLCTL_RPA_MSSQL_SERVER=rpa-server
+SQLCTL_RPA_MSSQL_DATABASE=RPA
+SQLCTL_RPA_MSSQL_USERNAME=rpa-user
+SQLCTL_RPA_MSSQL_PASSWORD=rpa-password
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    (package_root / "pyproject.toml").write_text(
+        """
+[tool.sqlctl.validation.profiles.strict]
+enabled_rules = ["required_metadata", "comparison_keys_required"]
+
+[tool.sqlctl.database.connection_templates.rpa_mssql]
+driver = "mssql"
+sql_driver = "ODBC Driver 17 for SQL Server"
+server_env = "SQLCTL_RPA_MSSQL_SERVER"
+port = 1433
+database_env = "SQLCTL_RPA_MSSQL_DATABASE"
+username_env = "SQLCTL_RPA_MSSQL_USERNAME"
+password_env = "SQLCTL_RPA_MSSQL_PASSWORD"
+trust_server_certificate = true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "default_package_env_path", lambda: package_env)
+
+    config = load_config(env={})
+
+    connection = config.database_connections["rpa_mssql"]
+    assert config.validation_profiles["strict"].enabled_rules == (
+        "required_metadata",
+        "comparison_keys_required",
+    )
+    assert connection.driver == "mssql"
+    assert connection.sql_driver == "ODBC Driver 17 for SQL Server"
+    assert connection.server == "rpa-server"
+    assert connection.port == 1433
+    assert connection.database == "RPA"
+    assert connection.username == "rpa-user"
+    assert connection.password == "rpa-password"
+    assert connection.trust_server_certificate is True
+
+
+def test_load_config_parses_mssql_connection_with_env_secrets(tmp_path: Path) -> None:
+    config_path = tmp_path / "sqlctl.toml"
+    config_path.write_text(
+        """
+[database.connections.rpa_mssql]
+driver = "mssql"
+sql_driver = "ODBC Driver 17 for SQL Server"
+server = "rpa-server"
+port = 1433
+database = "RPA"
+username_env = "SQLCTL_RPA_MSSQL_USERNAME"
+password_env = "SQLCTL_RPA_MSSQL_PASSWORD"
+trust_server_certificate = true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(
+        config_paths=[config_path],
+        env={
+            "SQLCTL_RPA_MSSQL_USERNAME": "rpa-user",
+            "SQLCTL_RPA_MSSQL_PASSWORD": "rpa-password",
+        },
+    )
+
+    connection = config.database_connections["rpa_mssql"]
+    assert connection.driver == "mssql"
+    assert connection.sql_driver == "ODBC Driver 17 for SQL Server"
+    assert connection.server == "rpa-server"
+    assert connection.port == 1433
+    assert connection.database == "RPA"
+    assert connection.username == "rpa-user"
+    assert connection.password == "rpa-password"
+    assert connection.trust_server_certificate is True
+
+
+def test_mssql_named_parameters_translate_for_pyodbc() -> None:
+    sql, parameters = mssql_named_parameters(
+        "select * from dbo.Participants where participant_id = @participant_id "
+        "and plan_id = @plan_id or fallback_id = @participant_id",
+        {"participant_id": 123, "plan_id": "011"},
+    )
+
+    assert sql == (
+        "select * from dbo.Participants where participant_id = ? "
+        "and plan_id = ? or fallback_id = ?"
+    )
+    assert parameters == (123, "011", 123)
+
+
+def test_column_probe_sql_and_parameters_are_zero_row_safe() -> None:
+    sql = "select participant_id, name from dbo.Participants where participant_id = @participant_id;"
+
+    assert column_probe_sql(sql) == (
+        "select * from (\n"
+        "select participant_id, name from dbo.Participants where participant_id = @participant_id\n"
+        ") as sqlctl_column_probe where 1 = 0"
+    )
+    assert probe_parameters(sql) == {"participant_id": None}
+
+
+def test_column_probe_strips_only_final_top_level_order_by() -> None:
+    sql = (
+        "select participant_id, "
+        "(select max(plan_id) from plans order by plan_id) as latest_plan "
+        "from participants order by participant_id"
+    )
+
+    assert strip_top_level_order_by(sql) == (
+        "select participant_id, "
+        "(select max(plan_id) from plans order by plan_id) as latest_plan "
+        "from participants"
+    )
+
+
 def write_validation_config(path: Path) -> Path:
     config = path / "sqlctl.toml"
     config.write_text(
@@ -119,6 +350,73 @@ def write_validation_config(path: Path) -> Path:
 enabled_rules = ["required_metadata", "allowed_team", "allowed_app", "comparison_keys_required"]
 allowed_teams = ["Benefits"]
 allowed_apps = ["Defined Benefits"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return config
+
+
+def write_static_validation_config(path: Path) -> Path:
+    config = path / "sqlctl.toml"
+    config.write_text(
+        """
+[validation.profiles.static]
+enabled_rules = [
+  "required_metadata",
+  "comparison_keys_required",
+  "missing_input_parameters",
+  "unused_input_parameters",
+  "commented_out_sql",
+  "select_star",
+  "order_by_without_justification",
+  "top_without_justification",
+  "hard_coded_sensitive_literals",
+  "debug_columns",
+  "nolock_usage",
+  "write_operation"
+]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return config
+
+
+def write_column_compare_source_config(path: Path, *, reference_sql: str) -> Path:
+    database_path = path / "reference.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE production_participants (participant_id INTEGER, full_name TEXT, name TEXT)"
+        )
+    config = path / "sqlctl.toml"
+    config.write_text(
+        f"""
+[validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+column_compare_source = "participant_lookup_reference"
+
+[database.connections.warehouse]
+driver = "sqlite"
+path = "{database_path}"
+
+[repository.sources.participant_lookup_reference]
+connection = "warehouse"
+sql = {reference_sql!r}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    return config
+
+
+def write_column_compare_file_config(path: Path, reference_path: Path) -> Path:
+    config = path / "sqlctl.toml"
+    config.write_text(
+        f"""
+[validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+column_compare_file = {str(reference_path)!r}
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -214,6 +512,407 @@ def test_validate_force_pass_reports_forced_success(tmp_path: Path, capsys) -> N
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "forced"
     assert [issue["rule"] for issue in output["issues"]] == ["allowed_team"]
+
+
+def test_validate_static_rules_pass_clean_parameterized_select(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+ * Query_Name: Participant Lookup
+ * Connection_Name: Main Warehouse
+ * App_Name: Defined Benefits
+ * Comparison Keys: participant_id
+ * order by required for stable validation output
+ */
+
+select participant_id, name
+from participants
+where participant_id = @participant_id
+order by participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+
+
+def test_validate_static_rules_report_sql_quality_failures(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+Comparison Keys: participant_id
+-- where participant_id = @commented_parameter
+-- select disabled_column from old_table
+*/
+
+select top 10 *, count(*) as row_count
+from participants with (nolock)
+where participant_id = '123456789'
+order by participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert {issue["rule"] for issue in output["issues"]} == {
+        "missing_input_parameters",
+        "unused_input_parameters",
+        "commented_out_sql",
+        "select_star",
+        "order_by_without_justification",
+        "top_without_justification",
+        "hard_coded_sensitive_literals",
+        "debug_columns",
+        "nolock_usage",
+    }
+
+
+def test_validate_write_operation_allows_temp_tables(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Temp Table Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+Comparison Keys: participant_id
+*/
+
+create table #participants (participant_id int);
+insert into #participants values (@participant_id);
+select participant_id from #participants;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+
+
+def test_validate_write_operation_flags_non_temp_writes(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Update
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+Comparison Keys: participant_id
+*/
+
+update participants
+set name = 'Test'
+where participant_id = @participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert [issue["rule"] for issue in output["issues"]] == ["write_operation"]
+
+
+def test_validate_column_compare_matches_repository_source(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select p.participant_id, p.name as participant_name
+from participants p
+where p.participant_id = @participant_id;
+""",
+        encoding="utf-8",
+    )
+    config = write_column_compare_source_config(
+        tmp_path,
+        reference_sql=(
+            "select participant_id, full_name as participant_name "
+            "from production_participants"
+        ),
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "columns",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+
+
+def test_validate_column_compare_reports_order_mismatch(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants;
+""",
+        encoding="utf-8",
+    )
+    config = write_column_compare_source_config(
+        tmp_path,
+        reference_sql="select name, participant_id from production_participants",
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "columns",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is True
+    assert output["status"] == "warning"
+    assert output["issues"][0]["rule"] == "column_compare"
+    assert output["issues"][0]["severity"] == "warning"
+    assert "Expected: name, participant_id" in output["issues"][0]["message"]
+    assert "Actual: participant_id, name" in output["issues"][0]["message"]
+
+
+def test_validate_column_compare_uses_reference_file(tmp_path: Path, capsys) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants;
+""",
+        encoding="utf-8",
+    )
+    reference = tmp_path / "reference.sql"
+    reference.write_text(
+        """/*
+Query_Name: Participant Lookup Reference
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from production_participants;
+""",
+        encoding="utf-8",
+    )
+    config = write_column_compare_file_config(tmp_path, reference)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "columns",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "passed"
+
+
+def test_validate_column_compare_reports_unresolved_reference(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(sql_fixture(), encoding="utf-8")
+    config = tmp_path / "sqlctl.toml"
+    config.write_text(
+        """
+[validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "columns",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["ok"] is True
+    assert output["status"] == "warning"
+    assert output["issues"][0]["rule"] == "column_compare"
+    assert output["issues"][0]["severity"] == "warning"
+    assert "no reference query source or SQL file" in output["issues"][0]["message"]
+
+
+def test_validate_column_compare_warning_does_not_hide_errors(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select participant_id, name
+from participants;
+""",
+        encoding="utf-8",
+    )
+    reference = tmp_path / "reference.sql"
+    reference.write_text(
+        "select name, participant_id from production_participants;\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "sqlctl.toml"
+    config.write_text(
+        f"""
+[validation.profiles.columns]
+enabled_rules = ["required_metadata", "comparison_keys_required", "column_compare"]
+column_compare_file = {str(reference)!r}
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--profile",
+                "columns",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert output["ok"] is False
+    assert output["status"] == "failed"
+    assert {issue["severity"] for issue in output["issues"]} == {"error", "warning"}
+    assert {issue["rule"] for issue in output["issues"]} == {
+        "comparison_keys_required",
+        "column_compare",
+    }
 
 
 def test_prepare_refuses_to_capture_on_validation_failure(
