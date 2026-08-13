@@ -258,11 +258,26 @@ def query_source_columns(config: SqlctlConfig, source_name: str) -> tuple[str, .
         raise DatabaseError(
             f"Query source '{source_name}' must define connection and sql."
         )
-    return execute_query(
+    return query_columns(
         config,
         connection_name=source.connection,
-        sql=column_probe_sql(source.sql),
-        parameters=probe_parameters(source.sql),
+        sql=source.sql,
+        source_name=source_name,
+    )
+
+
+def query_columns(
+    config: SqlctlConfig,
+    *,
+    connection_name: str,
+    sql: str,
+    source_name: str | None = None,
+) -> tuple[str, ...]:
+    return execute_query(
+        config,
+        connection_name=connection_name,
+        sql=column_probe_sql(sql),
+        parameters=probe_parameters(sql),
         source_name=source_name,
     ).columns
 
