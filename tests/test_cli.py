@@ -2610,6 +2610,93 @@ def test_validate_stored_query_matches_stored_query_by_metadata(
     assert output["comparison"]["status"] == "matched"
 
 
+def test_validate_text_output_reports_static_validation_failure(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        """/*
+Query_Name: Participant Active Lookup
+Connection_Name: Main Warehouse
+App_Name: Defined Benefits
+*/
+
+select *
+from participants
+where participant_id = '123456789';
+""",
+        encoding="utf-8",
+    )
+    config = write_static_validation_config(tmp_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "validate",
+                str(source),
+                "--profile",
+                "static",
+                "--no-prompt",
+            ]
+        )
+        == 2
+    )
+
+    output = capsys.readouterr().err
+    assert "Validate compares a proposed query with the stored query." in output
+    assert "Static validation failed. The query comparison was not run." in output
+    assert "Validation failed:" in output
+    assert "Issues:" in output
+    assert "- [error] select_star (line 7):" in output
+    assert "- [error] hard_coded_sensitive_literals (line 9):" in output
+    assert "{'ok': False" not in output
+
+
+def test_validate_text_output_reports_comparison_table(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(comparison_fixture(), encoding="utf-8")
+    database_path = tmp_path / "query_store.sqlite3"
+    stored_sql = (
+        "select participant_id, name from participants "
+        "where active = :active order by name"
+    )
+    create_stored_query_validate_database(database_path, stored_sql=stored_sql)
+    config_path = write_stored_query_validate_config(tmp_path, database_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "validate",
+                str(source),
+                "--candidate-connection",
+                "query_store",
+                "--store-connection",
+                "query_store",
+                "--param",
+                "active=1",
+            ]
+        )
+        == 0
+    )
+
+    output = capsys.readouterr().out
+    assert "Validate compares a proposed query with the stored query." in output
+    assert "Metadata:" in output
+    assert "Query_Name: Participant Active Lookup" in output
+    assert "Comparison matched" in output
+    assert "Check" in output
+    assert "Proposed query" in output
+    assert "Stored query" in output
+    assert "Rows" in output
+    assert "{'ok': True" not in output
+
+
 def test_validate_resolves_candidate_connection_from_app_name(
     tmp_path: Path, capsys
 ) -> None:
