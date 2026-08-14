@@ -47,11 +47,15 @@ Check a SQL file against metadata and workflow rules:
 sqlctl check path/to/query.sql --profile strict --json
 ```
 
-Validate query results against the stored RPA query resolved from metadata:
+Validate query results against the stored query resolved from metadata:
 
 ```bash
 sqlctl validate path/to/query.sql --param active=1 --json
 ```
+
+`validate` runs both the proposed SQL and the stored query. By default, the proposed SQL runs
+against the database registered for the file's `App_Name`; use `--candidate-connection` only when
+you need an explicit override.
 
 Run validation once for each CSV parameter row:
 
@@ -139,8 +143,20 @@ column_compare_file = "reference/participant_lookup.sql"
 If `column_compare_source` and `column_compare_file` are omitted, `sqlctl` attempts to find a
 repository source using normalized names derived from `Query_Name`, `Connection_Name`, and
 `App_Name`. If no matching source is found and the active profile has
-`column_compare_connection`, `sqlctl` probes the current SQL against that connection. The built-in
-profiles use `rpa_mssql` for this fallback.
+`column_compare_connection`, `sqlctl` uses that connection to read the existing SQL from the query
+store and compares the stored SQL's final output columns to the proposed SQL. It does not run the
+proposed query or fetch report rows during `check`. The built-in profiles use `query_store_mssql`
+for this query store lookup.
+
+When the query store table differs from the default, configure it on the profile:
+
+```toml
+[validation.profiles.columns]
+enabled_rules = ["required_metadata", "column_compare"]
+column_compare_connection = "query_store_mssql"
+column_compare_store_table = "query_store.dbo.sql_queries"
+column_compare_store_sql_column = "SQL_Query"
+```
 
 ## Database And Repository Sources
 
@@ -151,40 +167,46 @@ Configure database connections and named query sources in `sqlctl.toml`:
 driver = "sqlite"
 path = "warehouse.sqlite3"
 
+[database.app_connections]
+"Defined Benefits" = "warehouse"
+DBCS = "dbcs_database"
+
 [repository.sources.participant_lookup]
 connection = "warehouse"
 sql = "select * from participants where participant_id = :participant_id"
 ```
 
-The project `pyproject.toml` provides an active default `rpa_mssql` connection template. Fill in
-the machine-specific values in the repository `.env`:
+The project `sqlctl.toml` provides the active default `query_store_mssql` connection. Fill in the
+machine-specific values in the repository `.env`:
 
 ```env
-SQLCTL_RPA_MSSQL_SERVER=your-server-name
-SQLCTL_RPA_MSSQL_DATABASE=your_database
-SQLCTL_RPA_MSSQL_USERNAME=your_username
-SQLCTL_RPA_MSSQL_PASSWORD=your_password
+SQLCTL_QUERY_STORE_MSSQL_SERVER=your-server-name
+SQLCTL_QUERY_STORE_MSSQL_DATABASE=your_database
+SQLCTL_QUERY_STORE_MSSQL_USERNAME=your_username
+SQLCTL_QUERY_STORE_MSSQL_PASSWORD=your_password
 ```
 
-The active template is equivalent to:
+`[database.app_connections]` maps SQL metadata `App_Name` values to database connection names.
+For example, `App_Name: DBCS` can map to a connection named `dbcs_database`; the App_Name and
+connection name do not need to match. If `sqlctl validate` sees an App_Name with no registration, it
+stops with an explicit error naming that App_Name and the available registrations.
+
+The project `sqlctl.toml` includes this query-store connection:
 
 ```toml
-[tool.sqlctl.validation.profiles.columns]
-enabled_rules = ["required_metadata", "column_compare"]
-column_compare_connection = "rpa_mssql"
-
-[tool.sqlctl.database.connection_templates.rpa_mssql]
+[database.connections.query_store_mssql]
 driver = "mssql"
 sql_driver = "ODBC Driver 17 for SQL Server"
-server_env = "SQLCTL_RPA_MSSQL_SERVER"
+server_env = "SQLCTL_QUERY_STORE_MSSQL_SERVER"
 port = 1433
-database_env = "SQLCTL_RPA_MSSQL_DATABASE"
-username_env = "SQLCTL_RPA_MSSQL_USERNAME"
-password_env = "SQLCTL_RPA_MSSQL_PASSWORD"
+database_env = "SQLCTL_QUERY_STORE_MSSQL_DATABASE"
+username_env = "SQLCTL_QUERY_STORE_MSSQL_USERNAME"
+password_env = "SQLCTL_QUERY_STORE_MSSQL_PASSWORD"
 trust_server_certificate = true
 ```
 
-Use `sqlctl.toml` only when you need local overrides, validation profiles, or repository sources:
+Use `sqlctl.toml` for local overrides, database connections, App_Name mappings, validation profiles,
+or repository sources:
 
 ```toml
 
@@ -193,7 +215,7 @@ enabled_rules = ["required_metadata", "column_compare"]
 column_compare_source = "participant_lookup_reference"
 
 [repository.sources.participant_lookup_reference]
-connection = "rpa_mssql"
+connection = "query_store_mssql"
 sql = """
 select participant_id, name
 from dbo.Participants
@@ -207,9 +229,10 @@ SQL Server repository sources may still use native `@parameter` markers; `sqlctl
 to ODBC positional parameters for `pyodbc`.
 
 The project-level `pyproject.toml` includes a `[tool.sqlctl]` section that supplies default
-`strict` and `columns` validation profiles, the active `rpa_mssql` connection template, and the
-implemented validation rules, warning-only rules, and required/optional connection fields. Keep
-machine-specific values in `.env`, environment variables, or explicit local overrides.
+`strict` and `columns` validation profiles plus the implemented validation rules, warning-only
+rules, and required/optional connection fields. Keep concrete connection registrations in
+`sqlctl.toml`, with machine-specific values in `.env`, environment variables, or explicit local
+overrides.
 
 Inspect connection metadata:
 

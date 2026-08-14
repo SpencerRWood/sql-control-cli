@@ -201,6 +201,21 @@ def get_connection_config(config: SqlctlConfig, name: str) -> DatabaseConnection
     return connection
 
 
+def connection_name_for_app(config: SqlctlConfig, app_name: str) -> str:
+    app_connections = config.database_app_connections or {}
+    if app_name not in app_connections:
+        available = ", ".join(sorted(app_connections)) or "(none)"
+        raise DatabaseError(
+            "Database connection is not registered for "
+            f"App_Name '{app_name}'. Configure [database.app_connections] "
+            "with an entry for this App_Name. "
+            f"Available app registrations: {available}"
+        )
+    connection_name = app_connections[app_name]
+    get_connection_config(config, connection_name)
+    return connection_name
+
+
 def adapter_for(config: SqlctlConfig, name: str) -> DatabaseAdapter:
     connection = get_connection_config(config, name)
     if connection.driver == "sqlite":

@@ -11,11 +11,12 @@ from pathlib import Path
 from .comparison import (
     compare_application,
     compare_to_production,
-    compare_to_rpa_stored_query,
-    rpa_compare_parameter_names,
+    compare_to_stored_query,
+    query_store_compare_parameter_names,
 )
 from .config import load_config
 from .database import (
+    connection_name_for_app,
     execute_query,
     execute_query_source,
     inspect_connection,
@@ -36,6 +37,7 @@ from .metadata import (
 )
 from .parity import audit_parity
 from .publishing import deploy_test
+from .query_store import DEFAULT_QUERY_STORE_SQL_COLUMN, DEFAULT_QUERY_STORE_TABLE
 from .storage import Repository
 from .validation import validate_sql_file
 
@@ -168,9 +170,9 @@ def main(argv: list[str] | None = None) -> int:
 
     validate_parser = subparsers.add_parser(
         "validate",
-        help="Validate SQL results against the stored RPA query resolved from metadata.",
+        help="Validate SQL results against the stored query resolved from metadata.",
     )
-    _add_rpa_validate_arguments(validate_parser)
+    _add_query_store_validate_arguments(validate_parser)
 
     compare_app_parser = subparsers.add_parser(
         "compare-app", help="Compare all managed SQL for an application."
@@ -230,10 +232,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
-def _add_rpa_validate_arguments(parser: argparse.ArgumentParser) -> None:
+def _add_query_store_validate_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("sql_file", type=Path)
-    parser.add_argument("--candidate-connection", default="rpa_mssql")
-    parser.add_argument("--store-connection", default="rpa_mssql")
+    parser.add_argument(
+        "--candidate-connection",
+        help="Override the candidate database connection resolved from App_Name.",
+    )
+    parser.add_argument("--store-connection", default="query_store_mssql")
     parser.add_argument("--profile", default="default", help="Validation profile name.")
     parser.add_argument(
         "--param",
@@ -253,12 +258,12 @@ def _add_rpa_validate_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--store-table",
-        default="wirpa_dev.dbo.rpa_SQL_Queries",
-        help="RPA query-store table containing stored SQL.",
+        default=DEFAULT_QUERY_STORE_TABLE,
+        help="Query store table containing stored SQL.",
     )
     parser.add_argument(
         "--store-sql-column",
-        default="SQL_Query",
+        default=DEFAULT_QUERY_STORE_SQL_COLUMN,
         help="Column in --store-table containing stored SQL text.",
     )
 
@@ -412,7 +417,7 @@ def _run(args: argparse.Namespace, config) -> int:
             _emit(output, json_output=args.json, stream=sys.stderr)
             return 2
     elif args.command == "validate":
-        parameter_names = rpa_compare_parameter_names(
+        parameter_names = query_store_compare_parameter_names(
             args.sql_file,
             config,
             store_connection=args.store_connection,
@@ -421,14 +426,14 @@ def _run(args: argparse.Namespace, config) -> int:
             store_sql_column=args.store_sql_column,
         )
         if args.param_csv:
-            output = _compare_rpa_csv(args, config)
+            output = _compare_query_store_csv(args, config)
         else:
             parameters = parse_parameters(args.param)
             if not args.no_prompt:
                 parameters = _prompt_for_missing_parameters(
                     parameters, parameter_names
                 )
-            output = _compare_rpa_once(args, config, parameters)
+            output = _compare_query_store_once(args, config, parameters)
         if not output["ok"]:
             _emit(output, json_output=args.json, stream=sys.stderr)
             return 2
@@ -490,11 +495,11 @@ def _prompt_for_missing_parameters(
     return resolved
 
 
-def _compare_rpa_once(args, config, parameters: dict[str, object]) -> dict[str, object]:
-    return compare_to_rpa_stored_query(
+def _compare_query_store_once(args, config, parameters: dict[str, object]) -> dict[str, object]:
+    return compare_to_stored_query(
         args.sql_file,
         config,
-        candidate_connection=args.candidate_connection,
+        candidate_connection=_candidate_connection_for_validate(args, config),
         store_connection=args.store_connection,
         parameters=parameters,
         profile_name=args.profile,
@@ -503,12 +508,19 @@ def _compare_rpa_once(args, config, parameters: dict[str, object]) -> dict[str, 
     )
 
 
-def _compare_rpa_csv(args, config) -> dict[str, object]:
+def _candidate_connection_for_validate(args, config) -> str:
+    if args.candidate_connection:
+        return args.candidate_connection
+    metadata = parse_metadata(args.sql_file.read_text(encoding="utf-8"))
+    return connection_name_for_app(config, metadata.app_name)
+
+
+def _compare_query_store_csv(args, config) -> dict[str, object]:
     base_parameters = parse_parameters(args.param)
     runs = []
     for row_number, row_parameters in _csv_parameter_rows(args.param_csv):
         parameters = {**base_parameters, **row_parameters}
-        result = _compare_rpa_once(args, config, parameters)
+        result = _compare_query_store_once(args, config, parameters)
         runs.append(
             {
                 "row": row_number,

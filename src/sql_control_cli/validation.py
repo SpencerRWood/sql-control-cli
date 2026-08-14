@@ -8,7 +8,6 @@ from .config import SqlctlConfig, ValidationProfile
 from .database import (
     DatabaseError,
     final_query_select_statement,
-    query_columns,
     query_source_columns,
     sqlctl_input_parameter_names,
 )
@@ -18,6 +17,7 @@ from .metadata import (
     normalize_identity_part,
     parse_metadata,
 )
+from .query_store import stored_query_sql
 
 DEFAULT_RULES = (
     "required_metadata",
@@ -666,10 +666,12 @@ def _resolve_column_compare_reference_columns(
         if source and source.sql:
             return _reference_source_columns(config, source_name)
     if profile.column_compare_connection:
-        return _connection_sql_columns(config, profile.column_compare_connection, sql_text)
+        return _stored_query_sql_columns(
+            config, profile.column_compare_connection, metadata, profile
+        )
     return (
         None,
-        "Column compare was requested but no reference query source, SQL file, or fallback connection could be resolved.",
+        "Column compare was requested but no reference query source, SQL file, or query store connection could be resolved.",
     )
 
 
@@ -682,16 +684,35 @@ def _reference_source_columns(
         return None, f"Column compare reference could not be resolved: {err}"
 
 
-def _connection_sql_columns(
-    config: SqlctlConfig, connection_name: str, sql_text: str
+def _stored_query_sql_columns(
+    config: SqlctlConfig,
+    connection_name: str,
+    metadata: QueryMetadata,
+    profile: ValidationProfile,
 ) -> tuple[tuple[str, ...] | None, str | None]:
     try:
-        return (
-            query_columns(config, connection_name=connection_name, sql=sql_text),
-            None,
+        reference_sql = stored_query_sql(
+            config,
+            connection_name=connection_name,
+            table=profile.column_compare_store_table,
+            sql_column=profile.column_compare_store_sql_column,
+            query_name=metadata.query_name,
+            connection_name_value=metadata.connection_name,
+            app_name=metadata.app_name,
         )
     except DatabaseError as err:
-        return None, f"Column compare fallback connection could not be resolved: {err}"
+        return None, f"Column compare query store could not be resolved: {err}"
+    if reference_sql is None:
+        return (
+            None,
+            (
+                "Stored query not found for metadata: "
+                f"Query_Name={metadata.query_name}, "
+                f"Connection_Name={metadata.connection_name}, "
+                f"App_Name={metadata.app_name}"
+            ),
+        )
+    return _final_select_columns(reference_sql), None
 
 
 def _candidate_reference_source_names(metadata: QueryMetadata) -> tuple[str, ...]:
