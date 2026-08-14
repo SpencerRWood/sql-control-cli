@@ -37,7 +37,6 @@ from .metadata import (
 )
 from .parity import audit_parity
 from .publishing import deploy_test
-from .query_store import DEFAULT_QUERY_STORE_SQL_COLUMN, DEFAULT_QUERY_STORE_TABLE
 from .storage import Repository
 from .validation import validate_sql_file
 
@@ -258,13 +257,11 @@ def _add_query_store_validate_arguments(parser: argparse.ArgumentParser) -> None
     )
     parser.add_argument(
         "--store-table",
-        default=DEFAULT_QUERY_STORE_TABLE,
-        help="Query store table containing stored SQL.",
+        help="Override the configured query store table containing stored SQL.",
     )
     parser.add_argument(
         "--store-sql-column",
-        default=DEFAULT_QUERY_STORE_SQL_COLUMN,
-        help="Column in --store-table containing stored SQL text.",
+        help="Override the configured query store SQL text column.",
     )
 
 
@@ -422,8 +419,8 @@ def _run(args: argparse.Namespace, config) -> int:
             config,
             store_connection=args.store_connection,
             profile_name=args.profile,
-            store_table=args.store_table,
-            store_sql_column=args.store_sql_column,
+            store_table=_query_store_table(args, config),
+            store_sql_column=_query_store_sql_column(args, config),
         )
         if args.param_csv:
             output = _compare_query_store_csv(args, config)
@@ -503,8 +500,8 @@ def _compare_query_store_once(args, config, parameters: dict[str, object]) -> di
         store_connection=args.store_connection,
         parameters=parameters,
         profile_name=args.profile,
-        store_table=args.store_table,
-        store_sql_column=args.store_sql_column,
+        store_table=_query_store_table(args, config),
+        store_sql_column=_query_store_sql_column(args, config),
     )
 
 
@@ -513,6 +510,14 @@ def _candidate_connection_for_validate(args, config) -> str:
         return args.candidate_connection
     metadata = parse_metadata(args.sql_file.read_text(encoding="utf-8"))
     return connection_name_for_app(config, metadata.app_name)
+
+
+def _query_store_table(args, config) -> str:
+    return args.store_table or config.query_store.table
+
+
+def _query_store_sql_column(args, config) -> str:
+    return args.store_sql_column or config.query_store.sql_column
 
 
 def _compare_query_store_csv(args, config) -> dict[str, object]:

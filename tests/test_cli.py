@@ -82,8 +82,11 @@ def test_pyproject_documents_sqlctl_runtime_contract() -> None:
 
 def test_project_sqlctl_toml_defines_query_store_connection() -> None:
     project_config = tomllib.loads(Path("sqlctl.toml").read_text(encoding="utf-8"))
+    query_store = project_config["query_store"]
     connection = project_config["database"]["connections"]["query_store_mssql"]
 
+    assert query_store["table"] == "wirpa_dev.dbo.rpa_SQL_Queries"
+    assert query_store["sql_column"] == "SQL_Query"
     assert connection["driver"] == "mssql"
     assert connection["sql_driver"] == "ODBC Driver 17 for SQL Server"
     assert connection["server_env"] == "SQLCTL_QUERY_STORE_MSSQL_SERVER"
@@ -242,6 +245,10 @@ def test_load_config_reads_package_sqlctl_toml(
     package_env.write_text("", encoding="utf-8")
     (package_root / "sqlctl.toml").write_text(
         f"""
+[query_store]
+table = "package_query_store"
+sql_column = "SQL_Text"
+
 [database.connections.package_warehouse]
 driver = "sqlite"
 path = "{database_path}"
@@ -253,11 +260,18 @@ PackageApp = "package_warehouse"
         encoding="utf-8",
     )
     monkeypatch.setattr(config_module, "default_package_env_path", lambda: package_env)
+    monkeypatch.setattr(
+        config_module,
+        "default_project_config_path",
+        lambda: tmp_path / "missing-sqlctl.toml",
+    )
 
     config = load_config(env={})
 
     assert config.database_connections["package_warehouse"].path == database_path
     assert connection_name_for_app(config, "PackageApp") == "package_warehouse"
+    assert config.query_store.table == "package_query_store"
+    assert config.query_store.sql_column == "SQL_Text"
 
 
 def test_real_environment_overrides_package_env_file(
@@ -1859,7 +1873,9 @@ from participants;
 [validation.profiles.columns]
 enabled_rules = ["required_metadata", "column_compare"]
 column_compare_connection = "warehouse"
-column_compare_store_table = "query_store_sql_queries"
+
+[query_store]
+table = "query_store_sql_queries"
 
 [database.connections.warehouse]
 driver = "sqlite"
@@ -2441,6 +2457,10 @@ def write_stored_query_validate_config(path: Path, database_path: Path) -> Path:
     config = path / "sqlctl.toml"
     config.write_text(
         f"""
+[query_store]
+table = "query_store_sql_queries"
+sql_column = "SQL_Query"
+
 [database.connections.query_store]
 driver = "sqlite"
 path = "{database_path}"
@@ -2559,8 +2579,6 @@ def test_validate_resolves_candidate_connection_from_app_name(
                 str(source),
                 "--store-connection",
                 "query_store",
-                "--store-table",
-                "query_store_sql_queries",
                 "--param",
                 "active=1",
             ]

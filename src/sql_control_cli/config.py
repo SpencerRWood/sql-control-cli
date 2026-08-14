@@ -15,8 +15,8 @@ class ValidationProfile:
     column_compare_source: str = ""
     column_compare_file: Path | None = None
     column_compare_connection: str = ""
-    column_compare_store_table: str = "query_store.dbo.sql_queries"
-    column_compare_store_sql_column: str = "SQL_Query"
+    column_compare_store_table: str = ""
+    column_compare_store_sql_column: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,12 @@ class TestPublishingConfig:
 
 
 @dataclass(frozen=True)
+class QueryStoreConfig:
+    table: str = "query_store.dbo.sql_queries"
+    sql_column: str = "SQL_Query"
+
+
+@dataclass(frozen=True)
 class SqlctlConfig:
     storage_path: Path
     managed_root: Path
@@ -60,6 +66,7 @@ class SqlctlConfig:
     database_connections: dict[str, DatabaseConnectionConfig] | None = None
     database_app_connections: dict[str, str] | None = None
     query_sources: dict[str, QuerySourceConfig] | None = None
+    query_store: QueryStoreConfig = QueryStoreConfig()
     test_publishing: TestPublishingConfig = TestPublishingConfig()
 
 
@@ -126,6 +133,7 @@ def load_config(
         "database_connections": {},
         "database_app_connections": {},
         "query_sources": {},
+        "query_store": {},
         "test_publishing": {},
     }
 
@@ -183,6 +191,7 @@ def load_config(
             name: _query_source(raw_source)
             for name, raw_source in dict(values["query_sources"]).items()
         },
+        query_store=_query_store(values["query_store"]),
         test_publishing=_test_publishing(values["test_publishing"]),
     )
 
@@ -251,6 +260,9 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
     repository = (
         data.get("repository") if isinstance(data.get("repository"), dict) else {}
     )
+    query_store = (
+        data.get("query_store") if isinstance(data.get("query_store"), dict) else {}
+    )
     publishing = (
         data.get("publishing") if isinstance(data.get("publishing"), dict) else {}
     )
@@ -279,6 +291,10 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
         or repository.get("sources")
         if isinstance(repository.get("sources"), dict)
         or isinstance(data.get("query_sources"), dict)
+        else None,
+        "query_store": data.get("query_store")
+        or query_store
+        if isinstance(query_store, dict) or isinstance(data.get("query_store"), dict)
         else None,
         "test_publishing": publishing.get("test")
         if isinstance(publishing.get("test"), dict)
@@ -323,6 +339,7 @@ def _merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
                     "database_connections",
                     "database_app_connections",
                     "query_sources",
+                    "query_store",
                 }:
                     merged[key] = {**merged[key], **value}
                 else:
@@ -352,12 +369,9 @@ def _validation_profile(raw_profile: Any) -> ValidationProfile:
         if profile.get("column_compare_file")
         else None,
         column_compare_connection=str(profile.get("column_compare_connection") or ""),
-        column_compare_store_table=str(
-            profile.get("column_compare_store_table")
-            or "query_store.dbo.sql_queries"
-        ),
+        column_compare_store_table=str(profile.get("column_compare_store_table") or ""),
         column_compare_store_sql_column=str(
-            profile.get("column_compare_store_sql_column") or "SQL_Query"
+            profile.get("column_compare_store_sql_column") or ""
         ),
     )
 
@@ -426,6 +440,14 @@ def _test_publishing(raw_publishing: Any) -> TestPublishingConfig:
     return TestPublishingConfig(
         connection=str(publishing.get("connection") or ""),
         table=str(publishing.get("table") or "sqlctl_test_queries"),
+    )
+
+
+def _query_store(raw_query_store: Any) -> QueryStoreConfig:
+    query_store = raw_query_store if isinstance(raw_query_store, dict) else {}
+    return QueryStoreConfig(
+        table=str(query_store.get("table") or "query_store.dbo.sql_queries"),
+        sql_column=str(query_store.get("sql_column") or "SQL_Query"),
     )
 
 
