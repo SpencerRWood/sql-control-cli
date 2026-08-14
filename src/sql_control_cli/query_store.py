@@ -4,7 +4,7 @@ from .config import SqlctlConfig
 from .database import QueryResult, execute_query, get_connection_config
 
 DEFAULT_QUERY_STORE_TABLE = "query_store.dbo.sql_queries"
-DEFAULT_QUERY_STORE_SQL_COLUMN = "SQL_Query"
+DEFAULT_QUERY_STORE_SQL_COLUMN = "Query_Value"
 
 
 def stored_query_sql(

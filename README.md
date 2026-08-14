@@ -153,7 +153,7 @@ Configure the query store table once in `sqlctl.toml`:
 ```toml
 [query_store]
 table = "wirpa_dev.dbo.rpa_SQL_Queries"
-sql_column = "SQL_Query"
+sql_column = "Query_Value"
 ```
 
 ## Database And Repository Sources
@@ -194,7 +194,7 @@ The project `sqlctl.toml` includes this query-store connection:
 ```toml
 [query_store]
 table = "wirpa_dev.dbo.rpa_SQL_Queries"
-sql_column = "SQL_Query"
+sql_column = "Query_Value"
 
 [database.connections.query_store_mssql]
 driver = "mssql"

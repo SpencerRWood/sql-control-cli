@@ -86,7 +86,7 @@ def test_project_sqlctl_toml_defines_query_store_connection() -> None:
     connection = project_config["database"]["connections"]["query_store_mssql"]
 
     assert query_store["table"] == "wirpa_dev.dbo.rpa_SQL_Queries"
-    assert query_store["sql_column"] == "SQL_Query"
+    assert query_store["sql_column"] == "Query_Value"
     assert connection["driver"] == "mssql"
     assert connection["sql_driver"] == "ODBC Driver 17 for SQL Server"
     assert connection["server_env"] == "SQLCTL_QUERY_STORE_MSSQL_SERVER"
@@ -1837,14 +1837,14 @@ def test_validate_column_compare_uses_fallback_connection(
                 Query_Name TEXT NOT NULL,
                 Connection_Name TEXT NOT NULL,
                 App_Name TEXT NOT NULL,
-                SQL_Query TEXT NOT NULL
+                Query_Value TEXT NOT NULL
             )
             """
         )
         connection.execute(
             """
             INSERT INTO query_store_sql_queries
-            (Query_Name, Connection_Name, App_Name, SQL_Query)
+            (Query_Name, Connection_Name, App_Name, Query_Value)
             VALUES (?, ?, ?, ?)
             """,
             (
@@ -2459,7 +2459,7 @@ def write_stored_query_validate_config(path: Path, database_path: Path) -> Path:
         f"""
 [query_store]
 table = "query_store_sql_queries"
-sql_column = "SQL_Query"
+sql_column = "Query_Value"
 
 [database.connections.query_store]
 driver = "sqlite"
@@ -2495,14 +2495,14 @@ def create_stored_query_validate_database(path: Path, *, stored_sql: str) -> Non
                 Query_Name TEXT NOT NULL,
                 Connection_Name TEXT NOT NULL,
                 App_Name TEXT NOT NULL,
-                SQL_Query TEXT NOT NULL
+                Query_Value TEXT NOT NULL
             )
             """
         )
         connection.execute(
             """
             INSERT INTO query_store_sql_queries
-            (Query_Name, Connection_Name, App_Name, SQL_Query)
+            (Query_Name, Connection_Name, App_Name, Query_Value)
             VALUES (?, ?, ?, ?)
             """,
             (

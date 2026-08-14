@@ -1,6 +1,6 @@
 [query_store]
 table = "wirpa_dev.dbo.rpa_SQL_Queries"
-sql_column = "SQL_Query"
+sql_column = "Query_Value"
 
 [database.connections.query_store_mssql]
 driver = "mssql"

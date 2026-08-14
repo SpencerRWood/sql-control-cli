@@ -172,7 +172,7 @@ def compare_to_stored_query(
     parameters: dict[str, object] | None = None,
     profile_name: str = "default",
     store_table: str = "query_store.dbo.sql_queries",
-    store_sql_column: str = "SQL_Query",
+    store_sql_column: str = "Query_Value",
 ) -> dict[str, object]:
     validation = validate_sql_file(sql_file, config, profile_name=profile_name)
     if not validation.passed:
@@ -227,7 +227,7 @@ def query_store_compare_parameter_names(
     store_connection: str,
     profile_name: str = "default",
     store_table: str = "query_store.dbo.sql_queries",
-    store_sql_column: str = "SQL_Query",
+    store_sql_column: str = "Query_Value",
 ) -> tuple[str, ...]:
     validation = validate_sql_file(sql_file, config, profile_name=profile_name)
     if not validation.passed:

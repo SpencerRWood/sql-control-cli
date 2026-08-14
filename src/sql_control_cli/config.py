@@ -54,7 +54,7 @@ class TestPublishingConfig:
 @dataclass(frozen=True)
 class QueryStoreConfig:
     table: str = "query_store.dbo.sql_queries"
-    sql_column: str = "SQL_Query"
+    sql_column: str = "Query_Value"
 
 
 @dataclass(frozen=True)
@@ -447,7 +447,7 @@ def _query_store(raw_query_store: Any) -> QueryStoreConfig:
     query_store = raw_query_store if isinstance(raw_query_store, dict) else {}
     return QueryStoreConfig(
         table=str(query_store.get("table") or "query_store.dbo.sql_queries"),
-        sql_column=str(query_store.get("sql_column") or "SQL_Query"),
+        sql_column=str(query_store.get("sql_column") or "Query_Value"),
     )
 
 
