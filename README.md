@@ -148,14 +148,12 @@ store and compares the stored SQL's final output columns to the proposed SQL. It
 proposed query or fetch report rows during `check`. The built-in profiles use `query_store_mssql`
 for this query store lookup.
 
-When the query store table differs from the default, configure it on the profile:
+Configure the query store table once in `sqlctl.toml`:
 
 ```toml
-[validation.profiles.columns]
-enabled_rules = ["required_metadata", "column_compare"]
-column_compare_connection = "query_store_mssql"
-column_compare_store_table = "query_store.dbo.sql_queries"
-column_compare_store_sql_column = "SQL_Query"
+[query_store]
+table = "wirpa_dev.dbo.rpa_SQL_Queries"
+sql_column = "SQL_Query"
 ```
 
 ## Database And Repository Sources
@@ -194,6 +192,10 @@ stops with an explicit error naming that App_Name and the available registration
 The project `sqlctl.toml` includes this query-store connection:
 
 ```toml
+[query_store]
+table = "wirpa_dev.dbo.rpa_SQL_Queries"
+sql_column = "SQL_Query"
+
 [database.connections.query_store_mssql]
 driver = "mssql"
 sql_driver = "ODBC Driver 17 for SQL Server"

@@ -694,8 +694,11 @@ def _stored_query_sql_columns(
         reference_sql = stored_query_sql(
             config,
             connection_name=connection_name,
-            table=profile.column_compare_store_table,
-            sql_column=profile.column_compare_store_sql_column,
+            table=profile.column_compare_store_table or config.query_store.table,
+            sql_column=(
+                profile.column_compare_store_sql_column
+                or config.query_store.sql_column
+            ),
             query_name=metadata.query_name,
             connection_name_value=metadata.connection_name,
             app_name=metadata.app_name,
