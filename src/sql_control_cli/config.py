@@ -15,6 +15,8 @@ class ValidationProfile:
     column_compare_source: str = ""
     column_compare_file: Path | None = None
     column_compare_connection: str = ""
+    column_compare_store_table: str = "query_store.dbo.sql_queries"
+    column_compare_store_sql_column: str = "SQL_Query"
 
 
 @dataclass(frozen=True)
@@ -56,6 +58,7 @@ class SqlctlConfig:
     normalize_whitespace: bool = True
     validation_profiles: dict[str, ValidationProfile] | None = None
     database_connections: dict[str, DatabaseConnectionConfig] | None = None
+    database_app_connections: dict[str, str] | None = None
     query_sources: dict[str, QuerySourceConfig] | None = None
     test_publishing: TestPublishingConfig = TestPublishingConfig()
 
@@ -89,6 +92,13 @@ def default_package_config_path() -> Path | None:
     return env_path.parent / "pyproject.toml"
 
 
+def default_package_sqlctl_config_path() -> Path | None:
+    env_path = default_package_env_path()
+    if env_path is None:
+        return None
+    return env_path.parent / "sqlctl.toml"
+
+
 def default_state_root() -> Path:
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -114,6 +124,7 @@ def load_config(
         "normalize_whitespace": True,
         "validation_profiles": {},
         "database_connections": {},
+        "database_app_connections": {},
         "query_sources": {},
         "test_publishing": {},
     }
@@ -122,6 +133,7 @@ def load_config(
         path
         for path in (
             default_package_config_path(),
+            default_package_sqlctl_config_path(),
             default_user_config_path(),
             default_project_config_path(),
         )
@@ -160,6 +172,12 @@ def load_config(
         database_connections={
             name: _database_connection(raw_connection, active_env)
             for name, raw_connection in dict(values["database_connections"]).items()
+        },
+        database_app_connections={
+            str(app_name): str(connection_name)
+            for app_name, connection_name in dict(
+                values["database_app_connections"]
+            ).items()
         },
         query_sources={
             name: _query_source(raw_source)
@@ -252,6 +270,11 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
         if isinstance(database.get("connections"), dict)
         or isinstance(data.get("database_connections"), dict)
         else None,
+        "database_app_connections": data.get("database_app_connections")
+        or database.get("app_connections")
+        if isinstance(database.get("app_connections"), dict)
+        or isinstance(data.get("database_app_connections"), dict)
+        else None,
         "query_sources": data.get("query_sources")
         or repository.get("sources")
         if isinstance(repository.get("sources"), dict)
@@ -281,6 +304,9 @@ def _flatten_tool_sqlctl(sqlctl: dict[str, Any]) -> dict[str, Any]:
         "database_connections": database_connections
         if isinstance(database_connections, dict)
         else None,
+        "database_app_connections": database.get("app_connections")
+        if isinstance(database.get("app_connections"), dict)
+        else None,
         "query_sources": repository.get("sources")
         if isinstance(repository.get("sources"), dict)
         else None,
@@ -291,6 +317,17 @@ def _merge(base: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in incoming.items():
         if value is not None and value != "":
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                if key in {
+                    "validation_profiles",
+                    "database_connections",
+                    "database_app_connections",
+                    "query_sources",
+                }:
+                    merged[key] = {**merged[key], **value}
+                else:
+                    merged[key] = _merge(merged[key], value)
+                continue
             merged[key] = value
     return merged
 
@@ -315,6 +352,13 @@ def _validation_profile(raw_profile: Any) -> ValidationProfile:
         if profile.get("column_compare_file")
         else None,
         column_compare_connection=str(profile.get("column_compare_connection") or ""),
+        column_compare_store_table=str(
+            profile.get("column_compare_store_table")
+            or "query_store.dbo.sql_queries"
+        ),
+        column_compare_store_sql_column=str(
+            profile.get("column_compare_store_sql_column") or "SQL_Query"
+        ),
     )
 
 

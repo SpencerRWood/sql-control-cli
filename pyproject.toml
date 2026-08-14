@@ -59,7 +59,7 @@ error_rules = [
 warning_rules = ["unused_input_parameters", "column_compare"]
 
 [tool.sqlctl.validation.profiles.default]
-column_compare_connection = "rpa_mssql"
+column_compare_connection = "query_store_mssql"
 enabled_rules = [
   "required_metadata",
   "allowed_app",
@@ -77,7 +77,7 @@ enabled_rules = [
 ]
 
 [tool.sqlctl.validation.profiles.strict]
-column_compare_connection = "rpa_mssql"
+column_compare_connection = "query_store_mssql"
 enabled_rules = [
   "required_metadata",
   "allowed_app",
@@ -96,7 +96,7 @@ enabled_rules = [
 
 [tool.sqlctl.validation.profiles.columns]
 enabled_rules = ["required_metadata", "column_compare"]
-column_compare_connection = "rpa_mssql"
+column_compare_connection = "query_store_mssql"
 
 [tool.sqlctl.database.connection_fields.sqlite]
 required = ["driver", "path"]
@@ -124,13 +124,3 @@ optional = [
 ]
 secret_fields = ["username", "password"]
 secret_env_fields = ["username_env", "password_env"]
-
-[tool.sqlctl.database.connection_templates.rpa_mssql]
-driver = "mssql"
-sql_driver = "ODBC Driver 17 for SQL Server"
-server_env = "SQLCTL_RPA_MSSQL_SERVER"
-port = 1433
-database_env = "SQLCTL_RPA_MSSQL_DATABASE"
-username_env = "SQLCTL_RPA_MSSQL_USERNAME"
-password_env = "SQLCTL_RPA_MSSQL_PASSWORD"
-trust_server_certificate = true
