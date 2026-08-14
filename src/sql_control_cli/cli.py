@@ -169,7 +169,9 @@ def main(argv: list[str] | None = None) -> int:
 
     validate_parser = subparsers.add_parser(
         "validate",
-        help="Validate SQL results against the stored query resolved from metadata.",
+        help=(
+            "Compare proposed SQL against the stored query resolved from metadata."
+        ),
     )
     _add_query_store_validate_arguments(validate_parser)
 
@@ -431,9 +433,15 @@ def _run(args: argparse.Namespace, config) -> int:
                     parameters, parameter_names
                 )
             output = _compare_query_store_once(args, config, parameters)
+        _emit_validate_output(
+            output,
+            json_output=args.json,
+            color=args.color,
+            stream=sys.stderr if not output["ok"] else None,
+        )
         if not output["ok"]:
-            _emit(output, json_output=args.json, stream=sys.stderr)
             return 2
+        return 0
     elif args.command == "compare-app":
         output = compare_application(
             config,
@@ -493,6 +501,9 @@ def _prompt_for_missing_parameters(
 
 
 def _compare_query_store_once(args, config, parameters: dict[str, object]) -> dict[str, object]:
+    validation = validate_sql_file(args.sql_file, config, profile_name=args.profile)
+    if not validation.passed:
+        return {"ok": False, "validation": validation.to_dict()}
     return compare_to_stored_query(
         args.sql_file,
         config,
@@ -570,6 +581,152 @@ def _emit(payload: object, *, json_output: bool, stream=None) -> None:
             print(f"{key}: {value}", file=active_stream)
     else:
         print(payload, file=active_stream)
+
+
+def _emit_validate_output(
+    payload: dict[str, object],
+    *,
+    json_output: bool,
+    color: str = "auto",
+    stream=None,
+) -> None:
+    if json_output:
+        _emit(payload, json_output=True, stream=stream)
+        return
+
+    active_stream = sys.stdout if stream is None else stream
+    use_color = _should_colorize(color, active_stream)
+    print("Validate compares a proposed query with the stored query.", file=active_stream)
+    print(
+        "It resolves the query by Query_Name, Connection_Name, and App_Name; "
+        "prompts for input parameters; runs both queries against the database "
+        "registered for App_Name; and reports row differences.",
+        file=active_stream,
+    )
+    print(file=active_stream)
+
+    validation = payload.get("validation")
+    if isinstance(validation, dict) and not validation.get("ok", True):
+        print(
+            _color_text(
+                "Static validation failed. The query comparison was not run.",
+                "red",
+                use_color,
+            ),
+            file=active_stream,
+        )
+        _emit_validation_payload(validation, color=color, stream=active_stream)
+        return
+
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    if metadata:
+        print("Metadata:", file=active_stream)
+        for label in ("Query_Name", "Connection_Name", "App_Name"):
+            value = metadata.get(label)
+            if value is not None:
+                print(f"  {label}: {value}", file=active_stream)
+        print(file=active_stream)
+
+    status = str(payload.get("status", "unknown"))
+    status_text = _color_text(status, _comparison_status_color(status), use_color)
+    print(f"Comparison {status_text}", file=active_stream)
+    print(_validate_comparison_table(payload), file=active_stream)
+
+    comparison = (
+        payload.get("comparison") if isinstance(payload.get("comparison"), dict) else {}
+    )
+    missing = comparison.get("missing_from_candidate", [])
+    unexpected = comparison.get("unexpected_in_candidate", [])
+    if missing or unexpected:
+        print(file=active_stream)
+        print("Differences:", file=active_stream)
+        print(f"  Missing from proposed query: {len(missing)}", file=active_stream)
+        print(f"  Unexpected in proposed query: {len(unexpected)}", file=active_stream)
+
+
+def _emit_validation_payload(
+    validation: dict[str, object], *, color: str = "auto", stream=None
+) -> None:
+    active_stream = sys.stdout if stream is None else stream
+    use_color = _should_colorize(color, active_stream)
+    status_value = str(validation.get("status", "failed"))
+    status = _color_text(status_value, _status_color(status_value), use_color)
+    print(f"Validation {status}: {validation.get('sql_file', '(unknown file)')}", file=active_stream)
+    print(f"Profile: {validation.get('profile', 'default')}", file=active_stream)
+    rules = validation.get("enabled_rules", [])
+    if isinstance(rules, list):
+        print(f"Rules: {', '.join(str(rule) for rule in rules)}", file=active_stream)
+    issues = validation.get("issues", [])
+    if not issues:
+        print(_color_text("No issues found.", "green", use_color), file=active_stream)
+        return
+    print(_color_text("Issues:", "bold", use_color), file=active_stream)
+    for issue in issues if isinstance(issues, list) else []:
+        if not isinstance(issue, dict):
+            continue
+        severity_value = str(issue.get("severity", "error"))
+        severity = _color_text(
+            severity_value, _severity_color(severity_value), use_color
+        )
+        location = _color_text(_issue_payload_location(issue), "blue", use_color)
+        print(
+            f"- [{severity}] {issue.get('rule', 'unknown')} "
+            f"({location}): {issue.get('message', '')}",
+            file=active_stream,
+        )
+
+
+def _validate_comparison_table(payload: dict[str, object]) -> str:
+    candidate = (
+        payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
+    )
+    reference = (
+        payload.get("reference") if isinstance(payload.get("reference"), dict) else {}
+    )
+    comparison = (
+        payload.get("comparison") if isinstance(payload.get("comparison"), dict) else {}
+    )
+    rows = [
+        (
+            "Connection",
+            str(candidate.get("connection", "")),
+            str(reference.get("connection", "")),
+        ),
+        (
+            "Rows",
+            str(candidate.get("row_count", "")),
+            str(reference.get("row_count", "")),
+        ),
+        ("Result", str(comparison.get("status", payload.get("status", ""))), ""),
+    ]
+    headers = ("Check", "Proposed query", "Stored query")
+    widths = [
+        max(len(headers[index]), *(len(row[index]) for row in rows))
+        for index in range(3)
+    ]
+    lines = [
+        " | ".join(headers[index].ljust(widths[index]) for index in range(3)),
+        "-+-".join("-" * width for width in widths),
+    ]
+    lines.extend(
+        " | ".join(row[index].ljust(widths[index]) for index in range(3))
+        for row in rows
+    )
+    return "\n".join(lines)
+
+
+def _comparison_status_color(status: str) -> str:
+    return "green" if status == "matched" else "red"
+
+
+def _issue_payload_location(issue: dict[str, object]) -> str:
+    line = issue.get("line")
+    if line is None:
+        return "line n/a"
+    line_end = issue.get("line_end")
+    if line_end is not None and line_end != line:
+        return f"line {line}-{line_end}"
+    return f"line {line}"
 
 
 ANSI_COLORS = {
