@@ -381,6 +381,36 @@ trust_server_certificate = true
     assert connection.trust_server_certificate is True
 
 
+def test_load_config_parses_mssql_active_directory_interactive(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "sqlctl.toml"
+    config_path.write_text(
+        """
+[database.connections.dbcs_database]
+driver = "mssql"
+sql_driver = "ODBC Driver 17 for SQL Server"
+server = "dbcs-server"
+database = "DBCS"
+authentication = "ActiveDirectoryInteractive"
+username_env = "SQLCTL_DBCS_USERNAME"
+trust_server_certificate = true
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(
+        config_paths=[config_path],
+        env={"SQLCTL_DBCS_USERNAME": "person@example.com"},
+    )
+
+    connection = config.database_connections["dbcs_database"]
+    assert connection.authentication == "ActiveDirectoryInteractive"
+    assert connection.username == "person@example.com"
+    assert connection.password == ""
+
+
 def test_load_config_parses_database_app_connections(tmp_path: Path) -> None:
     config_path = tmp_path / "sqlctl.toml"
     config_path.write_text(
@@ -535,6 +565,30 @@ def test_mssql_connection_string_appends_port_for_plain_server() -> None:
 
     assert "SERVER={query_store-server,1433}" in connection_string
     assert "PWD={query_store;password}" in connection_string
+
+
+def test_mssql_connection_string_supports_active_directory_interactive() -> None:
+    adapter = MSSQLAdapter(
+        "dbcs_database",
+        DatabaseConnectionConfig(
+            driver="mssql",
+            sql_driver="ODBC Driver 17 for SQL Server",
+            server="dbcs-server",
+            port=1433,
+            database="DBCS",
+            authentication="ActiveDirectoryInteractive",
+            username="person@example.com",
+            trust_server_certificate=True,
+        ),
+    )
+
+    connection_string = adapter._connection_string()
+
+    assert "SERVER={dbcs-server,1433}" in connection_string
+    assert "DATABASE={DBCS}" in connection_string
+    assert "Authentication={ActiveDirectoryInteractive}" in connection_string
+    assert "UID={person@example.com}" in connection_string
+    assert "PWD=" not in connection_string
 
 
 def test_column_probe_sql_and_parameters_are_zero_row_safe() -> None:

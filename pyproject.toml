@@ -117,6 +117,8 @@ optional = [
   "trust_server_certificate",
   "trust_server_certificate_env",
   "sql_driver_env",
+  "authentication",
+  "authentication_env",
   "server",
   "database",
   "username",

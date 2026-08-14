@@ -189,6 +189,24 @@ For example, `App_Name: DBCS` can map to a connection named `dbcs_database`; the
 connection name do not need to match. If `sqlctl validate` sees an App_Name with no registration, it
 stops with an explicit error naming that App_Name and the available registrations.
 
+For databases that use Microsoft Entra ID / Active Directory interactive login, configure the MSSQL
+connection with `authentication = "ActiveDirectoryInteractive"` and omit `password_env`:
+
+```toml
+[database.connections.dbcs_database]
+driver = "mssql"
+sql_driver = "ODBC Driver 17 for SQL Server"
+server_env = "SQLCTL_DBCS_SERVER"
+port = 1433
+database_env = "SQLCTL_DBCS_DATABASE"
+authentication = "ActiveDirectoryInteractive"
+username_env = "SQLCTL_DBCS_USERNAME"
+trust_server_certificate = true
+
+[database.app_connections]
+DBCS = "dbcs_database"
+```
+
 The project `sqlctl.toml` includes this query-store connection:
 
 ```toml

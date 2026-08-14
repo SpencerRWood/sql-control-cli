@@ -109,9 +109,9 @@ class MSSQLAdapter:
             missing.append("server")
         if not config.database:
             missing.append("database")
-        if not config.username:
+        if _mssql_requires_username(config.authentication) and not config.username:
             missing.append("username or username_env")
-        if not config.password:
+        if _mssql_requires_password(config.authentication) and not config.password:
             missing.append("password or password_env")
         if missing:
             raise DatabaseError(
@@ -165,16 +165,35 @@ class MSSQLAdapter:
     def _connection_string(self) -> str:
         server = _mssql_server_endpoint(self.config.server, self.config.port)
         trust = "yes" if self.config.trust_server_certificate else "no"
-        return ";".join(
-            [
-                f"DRIVER={_odbc_value(self.config.sql_driver)}",
-                f"SERVER={_odbc_value(server)}",
-                f"DATABASE={_odbc_value(self.config.database)}",
-                f"UID={_odbc_value(self.config.username)}",
-                f"PWD={_odbc_value(self.config.password)}",
-                f"TrustServerCertificate={trust}",
-            ]
-        )
+        parts = [
+            f"DRIVER={_odbc_value(self.config.sql_driver)}",
+            f"SERVER={_odbc_value(server)}",
+            f"DATABASE={_odbc_value(self.config.database)}",
+        ]
+        if self.config.authentication:
+            parts.append(f"Authentication={_odbc_value(self.config.authentication)}")
+        if self.config.username:
+            parts.append(f"UID={_odbc_value(self.config.username)}")
+        if self.config.password:
+            parts.append(f"PWD={_odbc_value(self.config.password)}")
+        parts.append(f"TrustServerCertificate={trust}")
+        return ";".join(parts)
+
+
+def _mssql_requires_username(authentication: str) -> bool:
+    return _normalized_mssql_authentication(authentication) in {"", "sqlpassword"}
+
+
+def _mssql_requires_password(authentication: str) -> bool:
+    return _normalized_mssql_authentication(authentication) in {
+        "",
+        "sqlpassword",
+        "activedirectorypassword",
+    }
+
+
+def _normalized_mssql_authentication(authentication: str) -> str:
+    return authentication.replace(" ", "").replace("-", "").lower()
 
 
 def _mssql_server_endpoint(server: str, port: int | None) -> str:

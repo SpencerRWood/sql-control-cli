@@ -27,12 +27,14 @@ class DatabaseConnectionConfig:
     server: str = ""
     port: int | None = None
     database: str = ""
+    authentication: str = ""
     username: str = ""
     password: str = ""
     sql_driver_env: str = ""
     server_env: str = ""
     port_env: str = ""
     database_env: str = ""
+    authentication_env: str = ""
     username_env: str = ""
     password_env: str = ""
     trust_server_certificate_env: str = ""
@@ -394,6 +396,7 @@ def _database_connection(
     server_env = str(connection.get("server_env") or "")
     port_env = str(connection.get("port_env") or "")
     database_env = str(connection.get("database_env") or "")
+    authentication_env = str(connection.get("authentication_env") or "")
     username_env = str(connection.get("username_env") or "")
     password_env = str(connection.get("password_env") or "")
     trust_server_certificate_env = str(
@@ -408,12 +411,17 @@ def _database_connection(
         server=str(connection.get("server") or active_env.get(server_env, "")),
         port=_int_value(connection.get("port") or active_env.get(port_env)),
         database=str(connection.get("database") or active_env.get(database_env, "")),
+        authentication=str(
+            connection.get("authentication")
+            or active_env.get(authentication_env, "")
+        ),
         username=str(connection.get("username") or active_env.get(username_env, "")),
         password=str(connection.get("password") or active_env.get(password_env, "")),
         sql_driver_env=sql_driver_env,
         server_env=server_env,
         port_env=port_env,
         database_env=database_env,
+        authentication_env=authentication_env,
         username_env=username_env,
         password_env=password_env,
         trust_server_certificate_env=trust_server_certificate_env,

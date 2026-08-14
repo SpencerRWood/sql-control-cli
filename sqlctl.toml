@@ -21,8 +21,8 @@ trust_server_certificate = true
 # server_env = "SQLCTL_DBCS_SERVER"
 # port = 1433
 # database_env = "SQLCTL_DBCS_DATABASE"
+# authentication = "ActiveDirectoryInteractive"
 # username_env = "SQLCTL_DBCS_USERNAME"
-# password_env = "SQLCTL_DBCS_PASSWORD"
 # trust_server_certificate = true
 #
 # [database.app_connections]
