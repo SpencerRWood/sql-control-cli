@@ -1,0 +1,29 @@
+[query_store]
+table = "wirpa_dev.dbo.rpa_SQL_Queries"
+sql_column = "Query_Value"
+
+[database.connections.query_store_mssql]
+driver = "mssql"
+sql_driver = "ODBC Driver 17 for SQL Server"
+server_env = "SQLCTL_QUERY_STORE_MSSQL_SERVER"
+port = 1433
+database_env = "SQLCTL_QUERY_STORE_MSSQL_DATABASE"
+username_env = "SQLCTL_QUERY_STORE_MSSQL_USERNAME"
+password_env = "SQLCTL_QUERY_STORE_MSSQL_PASSWORD"
+trust_server_certificate = true
+
+# Register each SQL metadata App_Name with the database connection that should run
+# proposed queries during `sqlctl validate`.
+#
+# [database.connections.dbcs_database]
+# driver = "mssql"
+# sql_driver = "ODBC Driver 17 for SQL Server"
+# server_env = "SQLCTL_DBCS_SERVER"
+# port = 1433
+# database_env = "SQLCTL_DBCS_DATABASE"
+# username_env = "SQLCTL_DBCS_USERNAME"
+# password_env = "SQLCTL_DBCS_PASSWORD"
+# trust_server_certificate = true
+#
+# [database.app_connections]
+# DBCS = "dbcs_database"

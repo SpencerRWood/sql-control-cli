@@ -12,6 +12,7 @@ from sql_control_cli.database import (
     DatabaseConnectionConfig,
     MSSQLAdapter,
     column_probe_sql,
+    connection_name_for_app,
     execute_query,
     final_query_select_statement,
     inspect_connection,
@@ -61,7 +62,7 @@ def test_pyproject_documents_sqlctl_runtime_contract() -> None:
     ]
     assert (
         sqlctl["validation"]["profiles"]["columns"]["column_compare_connection"]
-        == "rpa_mssql"
+        == "query_store_mssql"
     )
 
     mssql_fields = sqlctl["database"]["connection_fields"]["mssql"]
@@ -76,12 +77,24 @@ def test_pyproject_documents_sqlctl_runtime_contract() -> None:
     assert mssql_fields["secret_fields"] == ["username", "password"]
     assert mssql_fields["secret_env_fields"] == ["username_env", "password_env"]
 
-    template = sqlctl["database"]["connection_templates"]["rpa_mssql"]
-    assert template["driver"] == "mssql"
-    assert template["server_env"] == "SQLCTL_RPA_MSSQL_SERVER"
-    assert template["database_env"] == "SQLCTL_RPA_MSSQL_DATABASE"
-    assert template["username_env"] == "SQLCTL_RPA_MSSQL_USERNAME"
-    assert template["password_env"] == "SQLCTL_RPA_MSSQL_PASSWORD"
+    assert "connection_templates" not in sqlctl["database"]
+
+
+def test_project_sqlctl_toml_defines_query_store_connection() -> None:
+    project_config = tomllib.loads(Path("sqlctl.toml").read_text(encoding="utf-8"))
+    query_store = project_config["query_store"]
+    connection = project_config["database"]["connections"]["query_store_mssql"]
+
+    assert query_store["table"] == "wirpa_dev.dbo.rpa_SQL_Queries"
+    assert query_store["sql_column"] == "Query_Value"
+    assert connection["driver"] == "mssql"
+    assert connection["sql_driver"] == "ODBC Driver 17 for SQL Server"
+    assert connection["server_env"] == "SQLCTL_QUERY_STORE_MSSQL_SERVER"
+    assert connection["port"] == 1433
+    assert connection["database_env"] == "SQLCTL_QUERY_STORE_MSSQL_DATABASE"
+    assert connection["username_env"] == "SQLCTL_QUERY_STORE_MSSQL_USERNAME"
+    assert connection["password_env"] == "SQLCTL_QUERY_STORE_MSSQL_PASSWORD"
+    assert connection["trust_server_certificate"] is True
 
 
 def sql_fixture() -> str:
@@ -222,6 +235,45 @@ SQLCTL_NORMALIZE_WHITESPACE=false
     assert config.normalize_whitespace is False
 
 
+def test_load_config_reads_package_sqlctl_toml(
+    tmp_path: Path, monkeypatch
+) -> None:
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    package_env = package_root / ".env"
+    database_path = tmp_path / "warehouse.sqlite3"
+    package_env.write_text("", encoding="utf-8")
+    (package_root / "sqlctl.toml").write_text(
+        f"""
+[query_store]
+table = "package_query_store"
+sql_column = "SQL_Text"
+
+[database.connections.package_warehouse]
+driver = "sqlite"
+path = "{database_path}"
+
+[database.app_connections]
+PackageApp = "package_warehouse"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config_module, "default_package_env_path", lambda: package_env)
+    monkeypatch.setattr(
+        config_module,
+        "default_project_config_path",
+        lambda: tmp_path / "missing-sqlctl.toml",
+    )
+
+    config = load_config(env={})
+
+    assert config.database_connections["package_warehouse"].path == database_path
+    assert connection_name_for_app(config, "PackageApp") == "package_warehouse"
+    assert config.query_store.table == "package_query_store"
+    assert config.query_store.sql_column == "SQL_Text"
+
+
 def test_real_environment_overrides_package_env_file(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -245,10 +297,10 @@ def test_load_config_uses_package_pyproject_sqlctl_connection_template(
     package_env = package_root / ".env"
     package_env.write_text(
         """
-SQLCTL_RPA_MSSQL_SERVER=rpa-server
-SQLCTL_RPA_MSSQL_DATABASE=RPA
-SQLCTL_RPA_MSSQL_USERNAME=rpa-user
-SQLCTL_RPA_MSSQL_PASSWORD=rpa-password
+SQLCTL_QUERY_STORE_MSSQL_SERVER=query_store-server
+SQLCTL_QUERY_STORE_MSSQL_DATABASE=query_store
+SQLCTL_QUERY_STORE_MSSQL_USERNAME=query_store-user
+SQLCTL_QUERY_STORE_MSSQL_PASSWORD=query_store-password
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -257,16 +309,16 @@ SQLCTL_RPA_MSSQL_PASSWORD=rpa-password
         """
 [tool.sqlctl.validation.profiles.strict]
 enabled_rules = ["required_metadata", "comparison_keys_required"]
-column_compare_connection = "rpa_mssql"
+column_compare_connection = "query_store_mssql"
 
-[tool.sqlctl.database.connection_templates.rpa_mssql]
+[tool.sqlctl.database.connection_templates.query_store_mssql]
 driver = "mssql"
 sql_driver = "ODBC Driver 17 for SQL Server"
-server_env = "SQLCTL_RPA_MSSQL_SERVER"
+server_env = "SQLCTL_QUERY_STORE_MSSQL_SERVER"
 port = 1433
-database_env = "SQLCTL_RPA_MSSQL_DATABASE"
-username_env = "SQLCTL_RPA_MSSQL_USERNAME"
-password_env = "SQLCTL_RPA_MSSQL_PASSWORD"
+database_env = "SQLCTL_QUERY_STORE_MSSQL_DATABASE"
+username_env = "SQLCTL_QUERY_STORE_MSSQL_USERNAME"
+password_env = "SQLCTL_QUERY_STORE_MSSQL_PASSWORD"
 trust_server_certificate = true
 """.strip()
         + "\n",
@@ -276,19 +328,19 @@ trust_server_certificate = true
 
     config = load_config(env={})
 
-    connection = config.database_connections["rpa_mssql"]
+    connection = config.database_connections["query_store_mssql"]
     assert config.validation_profiles["strict"].enabled_rules == (
         "required_metadata",
         "comparison_keys_required",
     )
-    assert config.validation_profiles["strict"].column_compare_connection == "rpa_mssql"
+    assert config.validation_profiles["strict"].column_compare_connection == "query_store_mssql"
     assert connection.driver == "mssql"
     assert connection.sql_driver == "ODBC Driver 17 for SQL Server"
-    assert connection.server == "rpa-server"
+    assert connection.server == "query_store-server"
     assert connection.port == 1433
-    assert connection.database == "RPA"
-    assert connection.username == "rpa-user"
-    assert connection.password == "rpa-password"
+    assert connection.database == "query_store"
+    assert connection.username == "query_store-user"
+    assert connection.password == "query_store-password"
     assert connection.trust_server_certificate is True
 
 
@@ -296,14 +348,14 @@ def test_load_config_parses_mssql_connection_with_env_secrets(tmp_path: Path) ->
     config_path = tmp_path / "sqlctl.toml"
     config_path.write_text(
         """
-[database.connections.rpa_mssql]
+[database.connections.query_store_mssql]
 driver = "mssql"
 sql_driver = "ODBC Driver 17 for SQL Server"
-server = "rpa-server"
+server = "query_store-server"
 port = 1433
-database = "RPA"
-username_env = "SQLCTL_RPA_MSSQL_USERNAME"
-password_env = "SQLCTL_RPA_MSSQL_PASSWORD"
+database = "query_store"
+username_env = "SQLCTL_QUERY_STORE_MSSQL_USERNAME"
+password_env = "SQLCTL_QUERY_STORE_MSSQL_PASSWORD"
 trust_server_certificate = true
 """.strip()
         + "\n",
@@ -313,20 +365,60 @@ trust_server_certificate = true
     config = load_config(
         config_paths=[config_path],
         env={
-            "SQLCTL_RPA_MSSQL_USERNAME": "rpa-user",
-            "SQLCTL_RPA_MSSQL_PASSWORD": "rpa-password",
+            "SQLCTL_QUERY_STORE_MSSQL_USERNAME": "query_store-user",
+            "SQLCTL_QUERY_STORE_MSSQL_PASSWORD": "query_store-password",
         },
     )
 
-    connection = config.database_connections["rpa_mssql"]
+    connection = config.database_connections["query_store_mssql"]
     assert connection.driver == "mssql"
     assert connection.sql_driver == "ODBC Driver 17 for SQL Server"
-    assert connection.server == "rpa-server"
+    assert connection.server == "query_store-server"
     assert connection.port == 1433
-    assert connection.database == "RPA"
-    assert connection.username == "rpa-user"
-    assert connection.password == "rpa-password"
+    assert connection.database == "query_store"
+    assert connection.username == "query_store-user"
+    assert connection.password == "query_store-password"
     assert connection.trust_server_certificate is True
+
+
+def test_load_config_parses_database_app_connections(tmp_path: Path) -> None:
+    config_path = tmp_path / "sqlctl.toml"
+    config_path.write_text(
+        f"""
+[database.connections.dbcs_database]
+driver = "sqlite"
+path = "{tmp_path / 'dbcs.sqlite3'}"
+
+[database.app_connections]
+DBCS = "dbcs_database"
+"Defined Benefits" = "benefits_database"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    config = load_config(config_paths=[config_path], env={})
+
+    assert connection_name_for_app(config, "DBCS") == "dbcs_database"
+    assert config.database_app_connections == {
+        "DBCS": "dbcs_database",
+        "Defined Benefits": "benefits_database",
+    }
+
+
+def test_app_connection_error_names_unregistered_app(tmp_path: Path) -> None:
+    config = load_config(storage_path=tmp_path / "state.sqlite3", env={})
+
+    try:
+        connection_name_for_app(config, "DBCS")
+    except ValueError as err:
+        assert str(err) == (
+            "Database connection is not registered for App_Name 'DBCS'. "
+            "Configure [database.app_connections] with an entry for this App_Name. "
+            "Available app registrations: (none)"
+        )
+    else:
+        raise AssertionError("Expected missing App_Name connection registration")
 
 
 def test_mssql_named_parameters_translate_for_pyodbc() -> None:
@@ -405,44 +497,44 @@ def test_sqlctl_input_placeholders_ignore_comments_and_strings() -> None:
 
 def test_mssql_connection_string_keeps_named_instance_without_port() -> None:
     adapter = MSSQLAdapter(
-        "rpa_mssql",
+        "query_store_mssql",
         DatabaseConnectionConfig(
             driver="mssql",
             sql_driver="ODBC Driver 17 for SQL Server",
-            server=r"rpa-server\sqlinst",
+            server=r"query_store-server\sqlinst",
             port=1433,
-            database="wirpa_dev",
-            username="rpa-user",
-            password="rpa-password",
+            database="query_store_dev",
+            username="query_store-user",
+            password="query_store-password",
             trust_server_certificate=True,
         ),
     )
 
     connection_string = adapter._connection_string()
 
-    assert "SERVER={rpa-server\\sqlinst}" in connection_string
-    assert "SERVER={rpa-server\\sqlinst,1433}" not in connection_string
+    assert "SERVER={query_store-server\\sqlinst}" in connection_string
+    assert "SERVER={query_store-server\\sqlinst,1433}" not in connection_string
 
 
 def test_mssql_connection_string_appends_port_for_plain_server() -> None:
     adapter = MSSQLAdapter(
-        "rpa_mssql",
+        "query_store_mssql",
         DatabaseConnectionConfig(
             driver="mssql",
             sql_driver="ODBC Driver 17 for SQL Server",
-            server="rpa-server",
+            server="query_store-server",
             port=1433,
-            database="wirpa_dev",
-            username="rpa-user",
-            password="rpa;password",
+            database="query_store_dev",
+            username="query_store-user",
+            password="query_store;password",
             trust_server_certificate=True,
         ),
     )
 
     connection_string = adapter._connection_string()
 
-    assert "SERVER={rpa-server,1433}" in connection_string
-    assert "PWD={rpa;password}" in connection_string
+    assert "SERVER={query_store-server,1433}" in connection_string
+    assert "PWD={query_store;password}" in connection_string
 
 
 def test_column_probe_sql_and_parameters_are_zero_row_safe() -> None:
@@ -1739,7 +1831,29 @@ def test_validate_column_compare_uses_fallback_connection(
 ) -> None:
     database_path = tmp_path / "reference.sqlite3"
     with sqlite3.connect(database_path) as connection:
-        connection.execute("CREATE TABLE participants (participant_id INTEGER, name TEXT)")
+        connection.execute(
+            """
+            CREATE TABLE query_store_sql_queries (
+                Query_Name TEXT NOT NULL,
+                Connection_Name TEXT NOT NULL,
+                App_Name TEXT NOT NULL,
+                Query_Value TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO query_store_sql_queries
+            (Query_Name, Connection_Name, App_Name, Query_Value)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "Participant Lookup",
+                "Main Warehouse",
+                "Defined Benefits",
+                "select participant_id, name from participants;",
+            ),
+        )
     source = tmp_path / "source.sql"
     source.write_text(
         """/*
@@ -1759,6 +1873,9 @@ from participants;
 [validation.profiles.columns]
 enabled_rules = ["required_metadata", "column_compare"]
 column_compare_connection = "warehouse"
+
+[query_store]
+table = "query_store_sql_queries"
 
 [database.connections.warehouse]
 driver = "sqlite"
@@ -1823,7 +1940,7 @@ enabled_rules = ["required_metadata", "column_compare"]
     assert output["status"] == "warning"
     assert output["issues"][0]["rule"] == "column_compare"
     assert output["issues"][0]["severity"] == "warning"
-    assert "no reference query source, SQL file, or fallback connection" in output[
+    assert "no reference query source, SQL file, or query store connection" in output[
         "issues"
     ][0]["message"]
 
@@ -2340,9 +2457,16 @@ def write_stored_query_validate_config(path: Path, database_path: Path) -> Path:
     config = path / "sqlctl.toml"
     config.write_text(
         f"""
-[database.connections.rpa]
+[query_store]
+table = "query_store_sql_queries"
+sql_column = "Query_Value"
+
+[database.connections.query_store]
 driver = "sqlite"
 path = "{database_path}"
+
+[database.app_connections]
+"Defined Benefits" = "query_store"
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -2367,18 +2491,18 @@ def create_stored_query_validate_database(path: Path, *, stored_sql: str) -> Non
         )
         connection.execute(
             """
-            CREATE TABLE rpa_sql_queries (
+            CREATE TABLE query_store_sql_queries (
                 Query_Name TEXT NOT NULL,
                 Connection_Name TEXT NOT NULL,
                 App_Name TEXT NOT NULL,
-                SQL_Query TEXT NOT NULL
+                Query_Value TEXT NOT NULL
             )
             """
         )
         connection.execute(
             """
-            INSERT INTO rpa_sql_queries
-            (Query_Name, Connection_Name, App_Name, SQL_Query)
+            INSERT INTO query_store_sql_queries
+            (Query_Name, Connection_Name, App_Name, Query_Value)
             VALUES (?, ?, ?, ?)
             """,
             (
@@ -2395,7 +2519,7 @@ def test_validate_stored_query_matches_stored_query_by_metadata(
 ) -> None:
     source = tmp_path / "source.sql"
     source.write_text(comparison_fixture(), encoding="utf-8")
-    database_path = tmp_path / "rpa.sqlite3"
+    database_path = tmp_path / "query_store.sqlite3"
     stored_sql = (
         "select participant_id, name from participants "
         "where active = :active order by name"
@@ -2412,11 +2536,11 @@ def test_validate_stored_query_matches_stored_query_by_metadata(
                 "validate",
                 str(source),
                 "--candidate-connection",
-                "rpa",
+                "query_store",
                 "--store-connection",
-                "rpa",
+                "query_store",
                 "--store-table",
-                "rpa_sql_queries",
+                "query_store_sql_queries",
                 "--param",
                 "active=1",
             ]
@@ -2426,10 +2550,99 @@ def test_validate_stored_query_matches_stored_query_by_metadata(
 
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "matched"
-    assert output["store"]["table"] == "rpa_sql_queries"
+    assert output["store"]["table"] == "query_store_sql_queries"
     assert output["candidate"]["row_count"] == 1
     assert output["reference"]["row_count"] == 1
     assert output["comparison"]["status"] == "matched"
+
+
+def test_validate_resolves_candidate_connection_from_app_name(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(comparison_fixture(), encoding="utf-8")
+    database_path = tmp_path / "query_store.sqlite3"
+    stored_sql = (
+        "select participant_id, name from participants "
+        "where active = :active order by name"
+    )
+    create_stored_query_validate_database(database_path, stored_sql=stored_sql)
+    config_path = write_stored_query_validate_config(tmp_path, database_path)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--json",
+                "validate",
+                str(source),
+                "--store-connection",
+                "query_store",
+                "--param",
+                "active=1",
+            ]
+        )
+        == 0
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["candidate"]["connection"] == "query_store"
+    assert output["status"] == "matched"
+
+
+def test_validate_reports_unregistered_app_name_connection(
+    tmp_path: Path, capsys
+) -> None:
+    source = tmp_path / "source.sql"
+    source.write_text(
+        comparison_fixture().replace("App_Name: Defined Benefits", "App_Name: DBCS"),
+        encoding="utf-8",
+    )
+    database_path = tmp_path / "query_store.sqlite3"
+    create_stored_query_validate_database(
+        database_path,
+        stored_sql="select participant_id, name from participants where active = :active",
+    )
+    config = tmp_path / "sqlctl.toml"
+    config.write_text(
+        f"""
+[database.connections.query_store]
+driver = "sqlite"
+path = "{database_path}"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config),
+                "--json",
+                "validate",
+                str(source),
+                "--store-connection",
+                "query_store",
+                "--store-table",
+                "query_store_sql_queries",
+                "--param",
+                "active=1",
+            ]
+        )
+        == 2
+    )
+
+    output = json.loads(capsys.readouterr().err)
+    assert output == {
+        "ok": False,
+        "error": (
+            "Database connection is not registered for App_Name 'DBCS'. "
+            "Configure [database.app_connections] with an entry for this App_Name. "
+            "Available app registrations: (none)"
+        ),
+    }
 
 
 def test_validate_stored_query_prompts_for_missing_parameters(
@@ -2437,7 +2650,7 @@ def test_validate_stored_query_prompts_for_missing_parameters(
 ) -> None:
     source = tmp_path / "source.sql"
     source.write_text(comparison_fixture(), encoding="utf-8")
-    database_path = tmp_path / "rpa.sqlite3"
+    database_path = tmp_path / "query_store.sqlite3"
     stored_sql = "select participant_id, name from participants where active = :active"
     create_stored_query_validate_database(database_path, stored_sql=stored_sql)
     config_path = write_stored_query_validate_config(tmp_path, database_path)
@@ -2452,11 +2665,11 @@ def test_validate_stored_query_prompts_for_missing_parameters(
                 "validate",
                 str(source),
                 "--candidate-connection",
-                "rpa",
+                "query_store",
                 "--store-connection",
-                "rpa",
+                "query_store",
                 "--store-table",
-                "rpa_sql_queries",
+                "query_store_sql_queries",
                 "--param",
                 "population=1",
             ]
@@ -2487,7 +2700,7 @@ and @population = @population;
 """,
         encoding="utf-8",
     )
-    database_path = tmp_path / "rpa.sqlite3"
+    database_path = tmp_path / "query_store.sqlite3"
     stored_sql = (
         "select participant_id, name from participants "
         "where active = <|>active<|> and participant_id = <|>participant_id<|>"
@@ -2512,11 +2725,11 @@ and @population = @population;
                 "validate",
                 str(source),
                 "--candidate-connection",
-                "rpa",
+                "query_store",
                 "--store-connection",
-                "rpa",
+                "query_store",
                 "--store-table",
-                "rpa_sql_queries",
+                "query_store_sql_queries",
                 "--param",
                 "population=1",
             ]
@@ -2532,7 +2745,7 @@ and @population = @population;
 def test_validate_stored_query_runs_each_csv_parameter_row(tmp_path: Path, capsys) -> None:
     source = tmp_path / "source.sql"
     source.write_text(comparison_fixture(), encoding="utf-8")
-    database_path = tmp_path / "rpa.sqlite3"
+    database_path = tmp_path / "query_store.sqlite3"
     stored_sql = "select participant_id, name from participants where active = :active"
     create_stored_query_validate_database(database_path, stored_sql=stored_sql)
     config_path = write_stored_query_validate_config(tmp_path, database_path)
@@ -2548,11 +2761,11 @@ def test_validate_stored_query_runs_each_csv_parameter_row(tmp_path: Path, capsy
                 "validate",
                 str(source),
                 "--candidate-connection",
-                "rpa",
+                "query_store",
                 "--store-connection",
-                "rpa",
+                "query_store",
                 "--store-table",
-                "rpa_sql_queries",
+                "query_store_sql_queries",
                 "--param-csv",
                 str(csv_path),
                 "--no-prompt",
