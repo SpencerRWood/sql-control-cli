@@ -121,6 +121,8 @@ optional = [
   "authentication_env",
   "server",
   "database",
+  "schema",
+  "schema_env",
   "username",
   "password",
 ]
