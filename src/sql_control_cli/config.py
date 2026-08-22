@@ -27,6 +27,7 @@ class DatabaseConnectionConfig:
     server: str = ""
     port: int | None = None
     database: str = ""
+    schema: str = ""
     authentication: str = ""
     username: str = ""
     password: str = ""
@@ -34,6 +35,7 @@ class DatabaseConnectionConfig:
     server_env: str = ""
     port_env: str = ""
     database_env: str = ""
+    schema_env: str = ""
     authentication_env: str = ""
     username_env: str = ""
     password_env: str = ""
@@ -396,6 +398,7 @@ def _database_connection(
     server_env = str(connection.get("server_env") or "")
     port_env = str(connection.get("port_env") or "")
     database_env = str(connection.get("database_env") or "")
+    schema_env = str(connection.get("schema_env") or "")
     authentication_env = str(connection.get("authentication_env") or "")
     username_env = str(connection.get("username_env") or "")
     password_env = str(connection.get("password_env") or "")
@@ -411,6 +414,7 @@ def _database_connection(
         server=str(connection.get("server") or active_env.get(server_env, "")),
         port=_int_value(connection.get("port") or active_env.get(port_env)),
         database=str(connection.get("database") or active_env.get(database_env, "")),
+        schema=str(connection.get("schema") or active_env.get(schema_env, "")),
         authentication=str(
             connection.get("authentication")
             or active_env.get(authentication_env, "")
@@ -421,6 +425,7 @@ def _database_connection(
         server_env=server_env,
         port_env=port_env,
         database_env=database_env,
+        schema_env=schema_env,
         authentication_env=authentication_env,
         username_env=username_env,
         password_env=password_env,

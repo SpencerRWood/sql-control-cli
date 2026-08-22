@@ -19,6 +19,7 @@ from sql_control_cli.database import (
     mssql_named_parameters,
     probe_parameters,
     probe_parameters_for_driver,
+    qualify_mssql_default_schema,
     sqlctl_input_parameter_names,
     sqlctl_input_placeholders_to_named_parameters,
     strip_top_level_order_by,
@@ -354,6 +355,7 @@ sql_driver = "ODBC Driver 17 for SQL Server"
 server = "query_store-server"
 port = 1433
 database = "query_store"
+schema = "reporting"
 username_env = "SQLCTL_QUERY_STORE_MSSQL_USERNAME"
 password_env = "SQLCTL_QUERY_STORE_MSSQL_PASSWORD"
 trust_server_certificate = true
@@ -376,6 +378,7 @@ trust_server_certificate = true
     assert connection.server == "query_store-server"
     assert connection.port == 1433
     assert connection.database == "query_store"
+    assert connection.schema == "reporting"
     assert connection.username == "query_store-user"
     assert connection.password == "query_store-password"
     assert connection.trust_server_certificate is True
@@ -525,6 +528,23 @@ def test_sqlctl_input_placeholders_ignore_comments_and_strings() -> None:
     )
 
 
+def test_sqlctl_input_placeholders_bind_quoted_value_markers() -> None:
+    sql = (
+        "select participant_id\n"
+        "from dbo.Participants vs\n"
+        "where vs.ssn_n = '<|>SSN<|>'\n"
+        "and vs.name like '<|>name<|>';"
+    )
+
+    assert sqlctl_input_parameter_names(sql) == ("SSN", "name")
+    assert sqlctl_input_placeholders_to_named_parameters(sql, driver="mssql") == (
+        "select participant_id\n"
+        "from dbo.Participants vs\n"
+        "where vs.ssn_n = :SSN\n"
+        "and vs.name like :name;"
+    )
+
+
 def test_mssql_connection_string_keeps_named_instance_without_port() -> None:
     adapter = MSSQLAdapter(
         "query_store_mssql",
@@ -589,6 +609,44 @@ def test_mssql_connection_string_supports_active_directory_interactive() -> None
     assert "Authentication={ActiveDirectoryInteractive}" in connection_string
     assert "UID={person@example.com}" in connection_string
     assert "PWD=" not in connection_string
+
+
+def test_mssql_default_schema_qualifies_unqualified_tables() -> None:
+    sql = """
+with recent as (
+    select participant_id from Participants
+)
+select p.participant_id
+from Participants p
+join [Plans] pl on pl.participant_id = p.participant_id
+join recent r on r.participant_id = p.participant_id
+join dbo.Known k on k.participant_id = p.participant_id
+where exists (select 1 from #temp t where t.id = p.participant_id)
+
+update Results
+set status = 'ok'
+
+insert into OutputRows (participant_id)
+select participant_id from Participants;
+"""
+
+    assert qualify_mssql_default_schema(sql, "dbcs") == """
+with recent as (
+    select participant_id from [dbcs].Participants
+)
+select p.participant_id
+from [dbcs].Participants p
+join [dbcs].[Plans] pl on pl.participant_id = p.participant_id
+join recent r on r.participant_id = p.participant_id
+join dbo.Known k on k.participant_id = p.participant_id
+where exists (select 1 from #temp t where t.id = p.participant_id)
+
+update [dbcs].Results
+set status = 'ok'
+
+insert into [dbcs].OutputRows (participant_id)
+select participant_id from [dbcs].Participants;
+"""
 
 
 def test_column_probe_sql_and_parameters_are_zero_row_safe() -> None:

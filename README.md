@@ -199,6 +199,7 @@ sql_driver = "ODBC Driver 17 for SQL Server"
 server_env = "SQLCTL_DBCS_SERVER"
 port = 1433
 database_env = "SQLCTL_DBCS_DATABASE"
+schema = "dbcs"
 authentication = "ActiveDirectoryInteractive"
 username_env = "SQLCTL_DBCS_USERNAME"
 trust_server_certificate = true
@@ -206,6 +207,12 @@ trust_server_certificate = true
 [database.app_connections]
 DBCS = "dbcs_database"
 ```
+
+For MSSQL connections, optional `schema` is applied by sqlctl before execution: common
+unqualified object references such as `from Participants` or `join [Plans]` become
+`from [dbcs].Participants` and `join [dbcs].[Plans]`. Already qualified names such as
+`dbo.Participants`, temp tables, table variables, and CTE references are left alone. SQL Server
+does not expose a general per-connection default schema setting through the ODBC connection string.
 
 The project `sqlctl.toml` includes this query-store connection:
 
@@ -245,6 +252,8 @@ where participant_id = <|>participant_id<|>
 
 Use `<|>name<|>` for parameters that `sqlctl validate` should prompt for or map from `--param`
 and `--param-csv`. Normal SQL variables such as `@population` are not interactive input markers.
+Quoted markers are supported when the whole quoted value is the marker, such as
+`where vs.ssn_n = '<|>SSN<|>'`; `sqlctl` binds that as a parameter and prompts for `SSN`.
 SQL Server repository sources may still use native `@parameter` markers; `sqlctl` translates them
 to ODBC positional parameters for `pyodbc`.
 

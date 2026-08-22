@@ -137,8 +137,9 @@ class MSSQLAdapter:
                 "uv tool install --editable /path/to/sql-control-cli --with pyodbc"
             ) from err
 
+        executable_sql = qualify_mssql_default_schema(sql, self.config.schema)
         executable_sql, positional_parameters = mssql_named_parameters(
-            sql, parameters
+            executable_sql, parameters
         )
         try:
             with pyodbc.connect(self._connection_string()) as connection:
@@ -194,6 +195,119 @@ def _mssql_requires_password(authentication: str) -> bool:
 
 def _normalized_mssql_authentication(authentication: str) -> str:
     return authentication.replace(" ", "").replace("-", "").lower()
+
+
+def qualify_mssql_default_schema(sql: str, schema: str) -> str:
+    active_schema = schema.strip()
+    if not active_schema:
+        return sql
+    cte_names = _mssql_cte_names(sql)
+    pieces: list[str] = []
+    position = 0
+    index = 0
+    while index < len(sql):
+        if sql[index] == "'":
+            index = _skip_quoted_string(sql, index)
+            continue
+        if sql.startswith("--", index):
+            index = _skip_line_comment(sql, index)
+            continue
+        if sql.startswith("/*", index):
+            index = _skip_block_comment(sql, index)
+            continue
+        keyword = _schema_qualifying_keyword_at(sql, index)
+        if keyword is None:
+            index += 1
+            continue
+        object_start = _skip_space(sql, index + len(keyword))
+        object_end = _mssql_identifier_end(sql, object_start)
+        if object_end is None:
+            index += len(keyword)
+            continue
+        identifier = sql[object_start:object_end]
+        qualified = _qualify_mssql_identifier(identifier, active_schema, cte_names)
+        if qualified == identifier:
+            index = object_end
+            continue
+        pieces.append(sql[position:object_start])
+        pieces.append(qualified)
+        position = object_end
+        index = object_end
+    pieces.append(sql[position:])
+    return "".join(pieces)
+
+
+def _schema_qualifying_keyword_at(sql: str, index: int) -> str | None:
+    lowered = sql.lower()
+    for keyword in ("from", "join", "update", "into", "merge"):
+        if _word_at(lowered, index, keyword):
+            return keyword
+    return None
+
+
+def _skip_space(value: str, index: int) -> int:
+    while index < len(value) and value[index].isspace():
+        index += 1
+    return index
+
+
+def _mssql_identifier_end(sql: str, start: int) -> int | None:
+    if start >= len(sql) or sql[start] in {"(", ";", ","}:
+        return None
+    index = start
+    while index < len(sql):
+        char = sql[index]
+        if char == "[":
+            end = sql.find("]", index + 1)
+            if end < 0:
+                return None
+            index = end + 1
+            continue
+        if char.isspace() or char in {",", ";", ")", "("}:
+            break
+        index += 1
+    return index if index > start else None
+
+
+def _qualify_mssql_identifier(
+    identifier: str, schema: str, cte_names: set[str]
+) -> str:
+    stripped = identifier.strip()
+    if not stripped:
+        return identifier
+    lowered = stripped.lower()
+    if (
+        "." in stripped
+        or stripped.startswith(("#", "@"))
+        or _normalized_mssql_identifier(stripped) in cte_names
+        or lowered in {"select", "values", "openquery", "openrowset"}
+    ):
+        return identifier
+    return f"{_quote_mssql_identifier(schema)}.{identifier}"
+
+
+def _quote_mssql_identifier(identifier: str) -> str:
+    if identifier.startswith("[") and identifier.endswith("]"):
+        return identifier
+    return f"[{identifier.replace(']', ']]')}]"
+
+
+def _mssql_cte_names(sql: str) -> set[str]:
+    names: set[str] = set()
+    for match in re.finditer(
+        r"(?:\bwith|,)\s+(\[[^\]]+\]|[A-Za-z_][A-Za-z0-9_]*)\s+as\s*\(",
+        sql,
+        flags=re.IGNORECASE,
+    ):
+        names.add(_normalized_mssql_identifier(match.group(1)))
+    return names
+
+
+def _normalized_mssql_identifier(identifier: str) -> str:
+    value = identifier.strip()
+    if value.startswith("[") and value.endswith("]"):
+        value = value[1:-1].replace("]]", "]")
+    return value.lower()
 
 
 def _mssql_server_endpoint(server: str, port: int | None) -> str:
@@ -523,6 +637,13 @@ def _active_sqlctl_input_matches(sql: str) -> tuple[tuple[int, int, str], ...]:
     while index < len(sql):
         char = sql[index]
         if char == "'":
+            quoted_match = _quoted_sqlctl_input_match(sql, index)
+            if quoted_match is not None and _quoted_marker_is_value_context(
+                sql, index
+            ):
+                matches.append(quoted_match)
+                index = quoted_match[1]
+                continue
             index = _skip_quoted_string(sql, index)
             continue
         if sql.startswith("--", index):
@@ -538,6 +659,30 @@ def _active_sqlctl_input_matches(sql: str) -> tuple[tuple[int, int, str], ...]:
             continue
         index += 1
     return tuple(matches)
+
+
+def _quoted_sqlctl_input_match(
+    sql: str, start: int
+) -> tuple[int, int, str] | None:
+    end = _skip_quoted_string(sql, start)
+    if end > len(sql) or end <= start + 2:
+        return None
+    inner = sql[start + 1 : end - 1]
+    match = SQLCTL_INPUT_PARAMETER_RE.fullmatch(inner.strip())
+    if match is None:
+        return None
+    return start, end, match.group(1)
+
+
+def _quoted_marker_is_value_context(sql: str, start: int) -> bool:
+    prefix = sql[:start].rstrip()
+    return bool(
+        re.search(
+            r"(?:=|<>|!=|<=|>=|<|>|\blike|\bin)\s*$",
+            prefix,
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 def named_parameter_names(sql: str) -> tuple[str, ...]:
